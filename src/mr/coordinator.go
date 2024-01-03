@@ -1,27 +1,32 @@
 package mr
 
-import "log"
+import (
+	"fmt"
+	"log"
+	"sync"
+)
 import "net"
 import "os"
 import "net/rpc"
 import "net/http"
 
 type Coordinator struct {
-	// Your definitions here.
-
+	files   []string
+	index   int
+	nReduce int
 }
 
-// Your code here -- RPC handlers for the worker to call.
-
-// an example RPC handler.
-//
-// the RPC argument and reply types are defined in rpc.go.
-func (c *Coordinator) Example(args *ExampleArgs, reply *ExampleReply) error {
-	reply.Y = args.X + 1
+func (c *Coordinator) MapTask(args *MapTaskArgs, response *MapTaskResponse) error {
+	var mu sync.Mutex
+	mu.Lock()
+	defer mu.Unlock()
+	response.File = c.files[c.index]
+	c.index++
+	fmt.Printf("Sending file %s to worker", response.File)
 	return nil
 }
 
-// start a thread that listens for RPCs from worker.go
+// server start a thread that listens for RPCs from worker.go
 func (c *Coordinator) server() {
 	rpc.Register(c)
 	rpc.HandleHTTP()
@@ -35,26 +40,21 @@ func (c *Coordinator) server() {
 	go http.Serve(l, nil)
 }
 
-// Done
-//
-// main/mrcoordinator.go calls Done() periodically to find out
+// Done main/mrcoordinator.go calls Done() periodically to find out
 // if the entire job has finished.
 func (c *Coordinator) Done() bool {
-	ret := false
-
-	// Your code here.
-
-	return ret
+	//if c.index == len(c.files) {
+	//	return true
+	//}
+	return false
 }
 
-// create a Coordinator.
+// MakeCoordinator create a Coordinator.
 // main/mrcoordinator.go calls this function.
 // nReduce is the number of reduce tasks to use.
 func MakeCoordinator(files []string, nReduce int) *Coordinator {
-	c := Coordinator{}
-
-	// Your code here.
-
+	c := Coordinator{files, 0, nReduce}
+	fmt.Println(files)
 	c.server()
 	return &c
 }
