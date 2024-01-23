@@ -9,11 +9,20 @@ package mr
 import "os"
 import "strconv"
 
-type MapTaskArgs struct {
-}
+type TaskType int
+
+const (
+	Map    TaskType = iota
+	Reduce TaskType = iota
+)
+
+type MapTaskArgs struct{}
 
 type MapTaskResponse struct {
-	File string
+	Type         TaskType
+	MapTaskIndex int
+	nReduce      int
+	File         string
 }
 
 // Cook up a unique-ish UNIX-domain socket name

@@ -1,6 +1,7 @@
 package mr
 
 import (
+	"encoding/json"
 	"fmt"
 	"io/ioutil"
 	"os"
@@ -23,26 +24,35 @@ func ihash(key string) int {
 	return int(h.Sum32() & 0x7fffffff)
 }
 
-// main/mrworker.go calls this function.
+// Worker main/mrworker.go calls this function.
 func Worker(mapf func(string, string) []KeyValue,
 	reduce func(string, []string) string) {
 	args := MapTaskArgs{}
 	response := MapTaskResponse{}
 	ok := call("Coordinator.MapTask", &args, &response)
-	if ok {
-		filename := response.File
-		file, err := os.Open(filename)
-		if err != nil {
-			log.Fatalf("cannot open %v", filename)
-		}
-		content, err := ioutil.ReadAll(file)
-		if err != nil {
-			log.Fatalf("cannot read %v", filename)
-		}
-		file.Close()
-		kva := mapf(filename, string(content))
-		// TODO: Write the kv pair into intermediate file.
+	if !ok {
+		os.Exit(1)
 	}
+
+	filename := response.File
+	fmt.Printf("Worker received Map Task %d", response.MapTaskIndex)
+	file, err := os.Open(filename)
+	if err != nil {
+		log.Fatalf("cannot open %v", filename)
+	}
+	content, err := ioutil.ReadAll(file)
+	if err != nil {
+		log.Fatalf("cannot read %v", filename)
+	}
+	file.Close()
+
+	// Write to result the temp file.
+	kva := mapf(filename, string(content))
+	enc := json.NewEncoder(file)
+	for _, kv := range kva {
+		err := enc.Encode(&kv)
+	}
+
 }
 
 // call send an RPC request to the coordinator, wait for the response.
