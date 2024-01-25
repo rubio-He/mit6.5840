@@ -21,6 +21,8 @@ func (c *Coordinator) MapTask(args *MapTaskArgs, response *MapTaskResponse) erro
 	mu.Lock()
 	defer mu.Unlock()
 	response.File = c.files[c.index]
+	response.TaskId = c.index
+	response.ReduceCount = c.nReduce
 	c.index++
 	fmt.Printf("Sending file %s to worker", response.File)
 	return nil
@@ -54,7 +56,6 @@ func (c *Coordinator) Done() bool {
 // nReduce is the number of reduce tasks to use.
 func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	c := Coordinator{files, 0, nReduce}
-	fmt.Println(files)
 	c.server()
 	return &c
 }

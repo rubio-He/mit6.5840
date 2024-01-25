@@ -19,10 +19,10 @@ const (
 type MapTaskArgs struct{}
 
 type MapTaskResponse struct {
-	Type         TaskType
-	MapTaskIndex int
-	nReduce      int
-	File         string
+	Type        TaskType
+	TaskId      int
+	ReduceCount int
+	File        string
 }
 
 // Cook up a unique-ish UNIX-domain socket name

@@ -35,22 +35,32 @@ func Worker(mapf func(string, string) []KeyValue,
 	}
 
 	filename := response.File
-	fmt.Printf("Worker received Map Task %d", response.MapTaskIndex)
+	fmt.Printf("Worker received Map Task: %d, reduce number: %d, %s\n",
+		response.TaskId, response.ReduceCount, filename)
 	file, err := os.Open(filename)
 	if err != nil {
-		log.Fatalf("cannot open %v", filename)
+		log.Fatalf("cannot open %v\n", filename)
 	}
 	content, err := ioutil.ReadAll(file)
 	if err != nil {
-		log.Fatalf("cannot read %v", filename)
+		log.Fatalf("cannot read %v\n", filename)
 	}
-	file.Close()
+	defer file.Close()
 
 	// Write to result the temp file.
 	kva := mapf(filename, string(content))
-	enc := json.NewEncoder(file)
 	for _, kv := range kva {
-		err := enc.Encode(&kv)
+		reduceId := ihash(kv.Key) % response.ReduceCount
+		tempFileName := fmt.Sprintf("mr-%d-%d.txt", response.TaskId, reduceId)
+		temp, err := os.OpenFile(tempFileName, os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0666)
+		if err != nil {
+			panic(err)
+		}
+		enc := json.NewEncoder(temp)
+		err = enc.Encode(&kv)
+		if err != nil {
+			log.Fatalf("Encoding error: %s", err)
+		}
 	}
 
 }
