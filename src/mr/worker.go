@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io/ioutil"
 	"os"
+	"time"
 )
 import "log"
 import "net/rpc"
@@ -27,13 +28,26 @@ func ihash(key string) int {
 // Worker main/mrworker.go calls this function.
 func Worker(mapf func(string, string) []KeyValue,
 	reduce func(string, []string) string) {
-	args := MapTaskArgs{}
-	response := MapTaskResponse{}
-	ok := call("Coordinator.MapTask", &args, &response)
-	if !ok {
-		os.Exit(1)
+	for {
+		mapRpcResponse := MapTaskResponse{Done: false}
+		ok := call("Coordinator.MapTask", &MapTaskArgs{}, &mapRpcResponse)
+		if !ok {
+			os.Exit(1)
+		}
+		if mapRpcResponse.Done {
+			break
+		}
+		mapJob(mapf, &mapRpcResponse)
+		completionRpcArgs := TaskCompletionArgs{Map}
+		ok = call("Coordinator.Complete", &completionRpcArgs, &TaskCompletionResponse{})
+		if !ok {
+			os.Exit(1)
+		}
+		time.Sleep(3 * time.Second)
 	}
+}
 
+func mapJob(mapf func(string, string) []KeyValue, response *MapTaskResponse) {
 	filename := response.File
 	fmt.Printf("Worker received Map Task: %d, reduce number: %d, %s\n",
 		response.TaskId, response.ReduceCount, filename)
@@ -62,7 +76,6 @@ func Worker(mapf func(string, string) []KeyValue,
 			log.Fatalf("Encoding error: %s", err)
 		}
 	}
-
 }
 
 // call send an RPC request to the coordinator, wait for the response.

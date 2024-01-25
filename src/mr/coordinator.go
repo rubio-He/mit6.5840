@@ -11,20 +11,38 @@ import "net/rpc"
 import "net/http"
 
 type Coordinator struct {
-	files   []string
-	index   int
-	nReduce int
+	files            []string
+	fileIndex        int
+	nReduce          int
+	completedMapTask int
 }
 
 func (c *Coordinator) MapTask(args *MapTaskArgs, response *MapTaskResponse) error {
 	var mu sync.Mutex
 	mu.Lock()
 	defer mu.Unlock()
-	response.File = c.files[c.index]
-	response.TaskId = c.index
+	if c.fileIndex >= len(c.files) {
+		response.Done = true
+		return nil
+	}
+	response.TaskId = c.fileIndex
+	response.File = c.files[c.fileIndex]
 	response.ReduceCount = c.nReduce
-	c.index++
+	c.fileIndex++
 	fmt.Printf("Sending file %s to worker", response.File)
+	return nil
+}
+
+func (c *Coordinator) Complete(args *TaskCompletionArgs, response *TaskCompletionResponse) error {
+	var mu sync.Mutex
+	mu.Lock()
+	defer mu.Unlock()
+
+	if args.Type == Map {
+		c.completedMapTask += 1
+		fmt.Printf("Finish map task count: %d\n", c.completedMapTask)
+	}
+
 	return nil
 }
 
@@ -55,7 +73,7 @@ func (c *Coordinator) Done() bool {
 // main/mrcoordinator.go calls this function.
 // nReduce is the number of reduce tasks to use.
 func MakeCoordinator(files []string, nReduce int) *Coordinator {
-	c := Coordinator{files, 0, nReduce}
+	c := Coordinator{files, 0, nReduce, 0}
 	c.server()
 	return &c
 }
