@@ -32,6 +32,13 @@ type TaskCompletionArgs struct {
 type TaskCompletionResponse struct {
 }
 
+type ReduceTaskArgs struct{}
+
+type ReduceTaskResponse struct {
+	Ready  bool
+	TaskId int
+}
+
 // Cook up a unique-ish UNIX-domain socket name
 // in /var/tmp, for the coordinator.
 // Can't use the current directory since

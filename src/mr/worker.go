@@ -43,8 +43,9 @@ func Worker(mapf func(string, string) []KeyValue,
 		if !ok {
 			os.Exit(1)
 		}
-		time.Sleep(3 * time.Second)
+		time.Sleep(1 * time.Second)
 	}
+
 }
 
 func mapJob(mapf func(string, string) []KeyValue, response *MapTaskResponse) {
