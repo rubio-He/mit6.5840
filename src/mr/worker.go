@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io/ioutil"
 	"os"
+	"sort"
 	"time"
 )
 import "log"
@@ -16,6 +17,14 @@ type KeyValue struct {
 	Key   string
 	Value string
 }
+
+// for sorting by key.
+type ByKey []KeyValue
+
+// for sorting by key.
+func (a ByKey) Len() int           { return len(a) }
+func (a ByKey) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
+func (a ByKey) Less(i, j int) bool { return a[i].Key < a[j].Key }
 
 // use ihash(key) % NReduce to choose the reduce
 // task number for each KeyValue emitted by Map.
@@ -30,7 +39,7 @@ func Worker(mapf func(string, string) []KeyValue,
 	reduce func(string, []string) string) {
 	for {
 		mapRpcResponse := MapTaskResponse{Done: false}
-		ok := call("Coordinator.MapTask", &MapTaskArgs{}, &mapRpcResponse)
+		ok := call("Coordinator.MapTask", &RpcArgs{}, &mapRpcResponse)
 		if !ok {
 			os.Exit(1)
 		}
@@ -38,12 +47,29 @@ func Worker(mapf func(string, string) []KeyValue,
 			break
 		}
 		mapJob(mapf, &mapRpcResponse)
-		completionRpcArgs := TaskCompletionArgs{Map}
-		ok = call("Coordinator.Complete", &completionRpcArgs, &TaskCompletionResponse{})
+		ok = call("Coordinator.Complete", &TaskCompletionArgs{Map}, &TaskCompletionResponse{})
 		if !ok {
-			os.Exit(1)
+			log.Fatal("Failed to finish the map task.")
 		}
-		time.Sleep(1 * time.Second)
+		time.Sleep(time.Second)
+	}
+
+	for {
+		reduceRpcResponse := ReduceTaskResponse{Ready: false}
+		ok := call("Coordinator.ReduceTask", &RpcArgs{}, &reduceRpcResponse)
+		if !ok {
+			log.Printf("Map reduce job finished!")
+			break
+		}
+		if !reduceRpcResponse.Ready {
+			continue
+		}
+		reduceJob(reduce, &reduceRpcResponse)
+		ok = call("Coordinator.Complete", &TaskCompletionArgs{Reduce}, &TaskCompletionResponse{})
+		if !ok {
+			log.Fatal("Failed to finish the reduce task.")
+		}
+		time.Sleep(time.Second)
 	}
 
 }
@@ -77,6 +103,54 @@ func mapJob(mapf func(string, string) []KeyValue, response *MapTaskResponse) {
 			log.Fatalf("Encoding error: %s", err)
 		}
 	}
+}
+
+func reduceJob(reducef func(string, []string) string, response *ReduceTaskResponse) {
+	fileNames := response.FileNames
+
+	kva := []KeyValue{}
+	for _, fileName := range fileNames {
+		file, err := os.Open(fileName)
+		if err != nil {
+			log.Fatalf("ReduceJob Failed to open file %s", fileName)
+		}
+		dec := json.NewDecoder(file)
+		for {
+			var kv KeyValue
+			if err := dec.Decode(&kv); err != nil {
+				break
+			}
+			kva = append(kva, kv)
+		}
+		os.Remove(fileName)
+	}
+
+	sort.Sort(ByKey(kva))
+	oname := fmt.Sprintf("mr-out-%d", response.TaskId)
+	ofile, _ := os.Create(oname)
+
+	//
+	// call Reduce on each distinct key in intermediate[],
+	// and print the result to mr-out-0.
+	//
+	i := 0
+	for i < len(kva) {
+		j := i + 1
+		for j < len(kva) && kva[j].Key == kva[i].Key {
+			j++
+		}
+		values := []string{}
+		for k := i; k < j; k++ {
+			values = append(values, kva[k].Value)
+		}
+		output := reducef(kva[i].Key, values)
+
+		// this is the correct format for each line of Reduce output.
+		fmt.Fprintf(ofile, "%v %v\n", kva[i].Key, output)
+		i = j
+	}
+
+	ofile.Close()
 }
 
 // call send an RPC request to the coordinator, wait for the response.

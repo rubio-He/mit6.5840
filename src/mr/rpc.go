@@ -16,7 +16,7 @@ const (
 	Reduce TaskType = iota
 )
 
-type MapTaskArgs struct{}
+type RpcArgs struct{}
 
 type MapTaskResponse struct {
 	Done        bool
@@ -32,11 +32,10 @@ type TaskCompletionArgs struct {
 type TaskCompletionResponse struct {
 }
 
-type ReduceTaskArgs struct{}
-
 type ReduceTaskResponse struct {
-	Ready  bool
-	TaskId int
+	Ready     bool
+	TaskId    int
+	FileNames []string
 }
 
 // Cook up a unique-ish UNIX-domain socket name

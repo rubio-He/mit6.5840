@@ -19,7 +19,7 @@ type Coordinator struct {
 	completedReduceTask int
 }
 
-func (c *Coordinator) MapTask(args *MapTaskArgs, response *MapTaskResponse) error {
+func (c *Coordinator) MapTask(_ *RpcArgs, response *MapTaskResponse) error {
 	var mu sync.Mutex
 	mu.Lock()
 	defer mu.Unlock()
@@ -36,7 +36,7 @@ func (c *Coordinator) MapTask(args *MapTaskArgs, response *MapTaskResponse) erro
 	return nil
 }
 
-func (c *Coordinator) ReduceTask(args *ReduceTaskArgs, response *ReduceTaskResponse) error {
+func (c *Coordinator) ReduceTask(_ *RpcArgs, response *ReduceTaskResponse) error {
 	var mu sync.Mutex
 	mu.Lock()
 	defer mu.Unlock()
@@ -49,6 +49,11 @@ func (c *Coordinator) ReduceTask(args *ReduceTaskArgs, response *ReduceTaskRespo
 	}
 
 	response.Ready = true
+	fileNames := make([]string, c.completedMapTask)
+	for i := 0; i < c.completedMapTask; i++ {
+		fileNames[i] = fmt.Sprintf("mr-%d-%d.txt", i, c.reduceTaskId)
+	}
+	response.FileNames = fileNames
 	response.TaskId = c.reduceTaskId
 	c.reduceTaskId++
 	return nil
