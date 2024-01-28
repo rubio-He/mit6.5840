@@ -10,13 +10,19 @@ import "os"
 import "net/rpc"
 import "net/http"
 
+type Status int
+
+const (
+	TODO Status = iota
+	PENDING
+	DONE
+)
+
 type Coordinator struct {
-	files               []string
-	fileIndex           int
-	nReduce             int
-	reduceTaskId        int
-	completedMapTask    int
-	completedReduceTask int
+	files            []string
+	nReduce          int
+	MapTaskStatus    []Status
+	ReduceTaskStatus []Status
 }
 
 func (c *Coordinator) MapTask(_ *RpcArgs, response *MapTaskResponse) error {
@@ -24,15 +30,17 @@ func (c *Coordinator) MapTask(_ *RpcArgs, response *MapTaskResponse) error {
 	mu.Lock()
 	defer mu.Unlock()
 
-	if c.fileIndex >= len(c.files) {
-		response.Done = true
+	for i, v := range c.MapTaskStatus {
+		if v == DONE || v == PENDING {
+			continue
+		}
+		response.TaskId = i
+		response.File = c.files[i]
+		response.ReduceCount = c.nReduce
+		fmt.Printf("Sending file %s to worker", response.File)
 		return nil
 	}
-	response.TaskId = c.fileIndex
-	response.File = c.files[c.fileIndex]
-	response.ReduceCount = c.nReduce
-	c.fileIndex++
-	fmt.Printf("Sending file %s to worker", response.File)
+	response.Done = true
 	return nil
 }
 
@@ -41,21 +49,26 @@ func (c *Coordinator) ReduceTask(_ *RpcArgs, response *ReduceTaskResponse) error
 	mu.Lock()
 	defer mu.Unlock()
 
-	if c.completedMapTask != len(c.files) {
+	if countCompletedTask(c.MapTaskStatus) != len(c.files) {
 		return nil
 	}
-	if c.completedReduceTask >= c.nReduce {
+	if countCompletedTask(c.ReduceTaskStatus) >= c.nReduce {
 		return nil
+	}
+	for i, v := range c.ReduceTaskStatus {
+		if v == DONE || v == PENDING {
+			continue
+		}
+		response.Ready = true
+		tasks := countCompletedTask(c.MapTaskStatus)
+		fileNames := make([]string, tasks)
+		for i := 0; i < tasks; i++ {
+			fileNames[i] = fmt.Sprintf("mr-%d-%d.txt", i, i)
+		}
+		response.FileNames = fileNames
+		response.TaskId = i
 	}
 
-	response.Ready = true
-	fileNames := make([]string, c.completedMapTask)
-	for i := 0; i < c.completedMapTask; i++ {
-		fileNames[i] = fmt.Sprintf("mr-%d-%d.txt", i, c.reduceTaskId)
-	}
-	response.FileNames = fileNames
-	response.TaskId = c.reduceTaskId
-	c.reduceTaskId++
 	return nil
 }
 
@@ -65,11 +78,11 @@ func (c *Coordinator) Complete(args *TaskCompletionArgs, response *TaskCompletio
 	defer mu.Unlock()
 
 	if args.Type == Map {
-		c.completedMapTask += 1
-		fmt.Printf("Finish map task count: %d\n", c.completedMapTask)
+		c.MapTaskStatus[args.Id] = DONE
+		fmt.Printf("Finish map task count: %d\n", c.MapTaskStatus)
 	} else {
-		c.completedReduceTask += 1
-		fmt.Printf("Finish reduce task count: %d\n", c.completedReduceTask)
+		c.ReduceTaskStatus[args.Id] = DONE
+		fmt.Printf("Finish reduce task count: %d\n", c.ReduceTaskStatus)
 	}
 
 	return nil
@@ -92,17 +105,27 @@ func (c *Coordinator) server() {
 // Done main/mrcoordinator.go calls Done() periodically to find out
 // if the entire job has finished.
 func (c *Coordinator) Done() bool {
-	if c.completedReduceTask >= c.nReduce {
+	if countCompletedTask(c.ReduceTaskStatus) >= c.nReduce {
 		return true
 	}
 	return false
+}
+
+func countCompletedTask(tasks []Status) int {
+	countOfCompletedTask := 0
+	for _, v := range tasks {
+		if v == DONE {
+			countOfCompletedTask += 1
+		}
+	}
+	return countOfCompletedTask
 }
 
 // MakeCoordinator create a Coordinator.
 // main/mrcoordinator.go calls this function.
 // nReduce is the number of reduce tasks to use.
 func MakeCoordinator(files []string, nReduce int) *Coordinator {
-	c := Coordinator{files, 0, nReduce, 0, 0, 0}
+	c := Coordinator{files, nReduce, make([]Status, len(files)), make([]Status, nReduce)}
 	c.server()
 	return &c
 }

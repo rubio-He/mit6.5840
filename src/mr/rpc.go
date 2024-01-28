@@ -12,8 +12,8 @@ import "strconv"
 type TaskType int
 
 const (
-	Map    TaskType = iota
-	Reduce TaskType = iota
+	Map TaskType = iota
+	Reduce
 )
 
 type RpcArgs struct{}
@@ -27,6 +27,7 @@ type MapTaskResponse struct {
 
 type TaskCompletionArgs struct {
 	Type TaskType
+	Id   int
 }
 
 type TaskCompletionResponse struct {

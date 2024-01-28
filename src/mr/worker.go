@@ -47,7 +47,7 @@ func Worker(mapf func(string, string) []KeyValue,
 			break
 		}
 		mapJob(mapf, &mapRpcResponse)
-		ok = call("Coordinator.Complete", &TaskCompletionArgs{Map}, &TaskCompletionResponse{})
+		ok = call("Coordinator.Complete", &TaskCompletionArgs{Map, mapRpcResponse.TaskId}, &TaskCompletionResponse{})
 		if !ok {
 			log.Fatal("Failed to finish the map task.")
 		}
@@ -65,7 +65,7 @@ func Worker(mapf func(string, string) []KeyValue,
 			continue
 		}
 		reduceJob(reduce, &reduceRpcResponse)
-		ok = call("Coordinator.Complete", &TaskCompletionArgs{Reduce}, &TaskCompletionResponse{})
+		ok = call("Coordinator.Complete", &TaskCompletionArgs{Reduce, reduceRpcResponse.TaskId}, &TaskCompletionResponse{})
 		if !ok {
 			log.Fatal("Failed to finish the reduce task.")
 		}
