@@ -1,9 +1,11 @@
 package mr
 
 import (
+	"6.5840/util"
 	"fmt"
 	"log"
 	"sync"
+	"time"
 )
 import "net"
 import "os"
@@ -19,25 +21,31 @@ const (
 )
 
 type Coordinator struct {
+	mu               sync.Mutex
 	files            []string
 	nReduce          int
 	MapTaskStatus    []Status
 	ReduceTaskStatus []Status
+	MapTaskTime      []time.Time
+	ReduceTaskTime   []time.Time
 }
 
 func (c *Coordinator) MapTask(_ *RpcArgs, response *MapTaskResponse) error {
-	var mu sync.Mutex
-	mu.Lock()
-	defer mu.Unlock()
+	c.mu.Lock()
+	defer c.mu.Unlock()
 
 	for i, v := range c.MapTaskStatus {
-		if v == DONE || v == PENDING {
+		if v == DONE {
+			continue
+		} else if v == PENDING && time.Now().Sub(c.MapTaskTime[i]) < 5*time.Second {
 			continue
 		}
+		c.MapTaskStatus[i] = PENDING
 		response.TaskId = i
 		response.File = c.files[i]
 		response.ReduceCount = c.nReduce
-		fmt.Printf("Sending file %s to worker", response.File)
+		c.MapTaskTime[i] = time.Now()
+		util.Println("Sending file %s to worker", response.File)
 		return nil
 	}
 	response.Done = true
@@ -45,9 +53,8 @@ func (c *Coordinator) MapTask(_ *RpcArgs, response *MapTaskResponse) error {
 }
 
 func (c *Coordinator) ReduceTask(_ *RpcArgs, response *ReduceTaskResponse) error {
-	var mu sync.Mutex
-	mu.Lock()
-	defer mu.Unlock()
+	c.mu.Lock()
+	defer c.mu.Unlock()
 
 	if countCompletedTask(c.MapTaskStatus) != len(c.files) {
 		return nil
@@ -56,33 +63,38 @@ func (c *Coordinator) ReduceTask(_ *RpcArgs, response *ReduceTaskResponse) error
 		return nil
 	}
 	for i, v := range c.ReduceTaskStatus {
-		if v == DONE || v == PENDING {
+		if v == DONE {
+			continue
+		} else if v == PENDING && time.Now().Sub(c.ReduceTaskTime[i]) < time.Second*3 {
 			continue
 		}
+		c.ReduceTaskStatus[i] = PENDING
 		response.Ready = true
-		tasks := countCompletedTask(c.MapTaskStatus)
+		tasks := len(c.files)
 		fileNames := make([]string, tasks)
-		for i := 0; i < tasks; i++ {
-			fileNames[i] = fmt.Sprintf("mr-%d-%d.txt", i, i)
+		for j := 0; j < tasks; j++ {
+			fileNames[j] = fmt.Sprintf("mr-%d-%d.txt", j, i)
 		}
 		response.FileNames = fileNames
 		response.TaskId = i
+		c.ReduceTaskTime[i] = time.Now()
+		util.Println("Sending reduce task %d to worker", i)
+		return nil
 	}
 
 	return nil
 }
 
 func (c *Coordinator) Complete(args *TaskCompletionArgs, response *TaskCompletionResponse) error {
-	var mu sync.Mutex
-	mu.Lock()
-	defer mu.Unlock()
+	c.mu.Lock()
+	defer c.mu.Unlock()
 
 	if args.Type == Map {
 		c.MapTaskStatus[args.Id] = DONE
-		fmt.Printf("Finish map task count: %d\n", c.MapTaskStatus)
+		util.Println("Finish map task count: %d", c.MapTaskStatus)
 	} else {
 		c.ReduceTaskStatus[args.Id] = DONE
-		fmt.Printf("Finish reduce task count: %d\n", c.ReduceTaskStatus)
+		util.Println("Finish reduce task count: %d", c.ReduceTaskStatus)
 	}
 
 	return nil
@@ -125,7 +137,13 @@ func countCompletedTask(tasks []Status) int {
 // main/mrcoordinator.go calls this function.
 // nReduce is the number of reduce tasks to use.
 func MakeCoordinator(files []string, nReduce int) *Coordinator {
-	c := Coordinator{files, nReduce, make([]Status, len(files)), make([]Status, nReduce)}
+	c := Coordinator{
+		files:            files,
+		nReduce:          nReduce,
+		MapTaskStatus:    make([]Status, len(files)),
+		ReduceTaskStatus: make([]Status, nReduce),
+		MapTaskTime:      make([]time.Time, len(files)),
+		ReduceTaskTime:   make([]time.Time, nReduce)}
 	c.server()
 	return &c
 }

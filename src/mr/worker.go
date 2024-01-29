@@ -1,6 +1,7 @@
 package mr
 
 import (
+	"6.5840/util"
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
@@ -76,15 +77,17 @@ func Worker(mapf func(string, string) []KeyValue,
 
 func mapJob(mapf func(string, string) []KeyValue, response *MapTaskResponse) {
 	filename := response.File
-	fmt.Printf("Worker received Map Task: %d, reduce number: %d, %s\n",
-		response.TaskId, response.ReduceCount, filename)
+	util.Println("Worker %d received Map Task: %d, reduce number: %d, %s",
+		os.Getpid(), response.TaskId, response.ReduceCount, filename)
 	file, err := os.Open(filename)
 	if err != nil {
-		log.Fatalf("cannot open %v\n", filename)
+		util.Println("cannot open %v", filename)
+		os.Exit(1)
 	}
 	content, err := ioutil.ReadAll(file)
 	if err != nil {
-		log.Fatalf("cannot read %v\n", filename)
+		util.Println("cannot read %v", filename)
+		os.Exit(1)
 	}
 	defer file.Close()
 
@@ -100,8 +103,10 @@ func mapJob(mapf func(string, string) []KeyValue, response *MapTaskResponse) {
 		enc := json.NewEncoder(temp)
 		err = enc.Encode(&kv)
 		if err != nil {
-			log.Fatalf("Encoding error: %s", err)
+			util.Println("Encoding error: %s", err)
+			os.Exit(1)
 		}
+		temp.Close()
 	}
 }
 
@@ -112,7 +117,8 @@ func reduceJob(reducef func(string, []string) string, response *ReduceTaskRespon
 	for _, fileName := range fileNames {
 		file, err := os.Open(fileName)
 		if err != nil {
-			log.Fatalf("ReduceJob Failed to open file %s", fileName)
+			util.Println("ReduceJob %d Failed to open file %s", response.TaskId, fileName)
+			continue
 		}
 		dec := json.NewDecoder(file)
 		for {
@@ -170,6 +176,6 @@ func call(rpcname string, args interface{}, reply interface{}) bool {
 		return true
 	}
 
-	fmt.Println(err)
+	fmt.Println("Coordinator has gone.")
 	return false
 }
