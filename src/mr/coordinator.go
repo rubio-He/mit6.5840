@@ -30,31 +30,76 @@ type Coordinator struct {
 	ReduceTaskTime   []time.Time
 }
 
-func (c *Coordinator) MapTask(_ *RpcArgs, response *MapTaskResponse) error {
+func (c *Coordinator) timeoutTask() {
+	for {
+		fmt.Println("MapTaskStatus, ReduceTaskStatus ", c.MapTaskStatus, c.ReduceTaskStatus)
+		for i, v := range c.MapTaskStatus {
+			c.mu.Lock()
+			if v == PENDING && time.Now().Sub(c.MapTaskTime[i]) > 11*time.Second {
+				c.MapTaskStatus[i] = TODO
+			}
+			c.mu.Unlock()
+		}
+
+		for i, v := range c.ReduceTaskStatus {
+			c.mu.Lock()
+			if v == PENDING && time.Now().Sub(c.ReduceTaskTime[i]) > 11*time.Second {
+				c.ReduceTaskStatus[i] = TODO
+			}
+			c.mu.Unlock()
+		}
+
+		time.Sleep(3 * time.Second)
+	}
+}
+
+func (c *Coordinator) GetTask(args *JobArgs, response *JobResponse) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	fmt.Println("Received Job Request ", args.WorkerId)
 
-	for i, v := range c.MapTaskStatus {
-		if v == DONE {
-			continue
-		} else if v == PENDING && time.Now().Sub(c.MapTaskTime[i]) < 5*time.Second {
-			continue
+	// Proceed to map task.
+	if countCompletedTask(c.MapTaskStatus) != len(c.files) {
+		for i, v := range c.MapTaskStatus {
+			if v == DONE || v == PENDING {
+				continue
+			}
+			c.MapTaskStatus[i] = PENDING
+			c.MapTaskTime[i] = time.Now()
+
+			response.TaskType = Map
+			response.TaskId = i
+			response.File = c.files[i]
+			response.ReduceCount = c.nReduce
+			response.MapCount = len(c.files)
+			util.Println("Sending file %s to worker", response.File)
+			return nil
 		}
-		c.MapTaskStatus[i] = PENDING
-		response.TaskId = i
-		response.File = c.files[i]
-		response.ReduceCount = c.nReduce
-		c.MapTaskTime[i] = time.Now()
-		util.Println("Sending file %s to worker", response.File)
-		return nil
+	} else {
+		for i, v := range c.ReduceTaskStatus {
+			if v == DONE || v == PENDING {
+				continue
+			}
+			c.ReduceTaskStatus[i] = PENDING
+			c.ReduceTaskTime[i] = time.Now()
+
+			response.TaskType = Reduce
+			response.TaskId = i
+			response.ReduceCount = c.nReduce
+			response.MapCount = len(c.files)
+			util.Println("Sending reduce task %d to worker", i)
+			return nil
+		}
 	}
-	response.Done = true
+
+	response.TaskType = Empty
 	return nil
 }
 
-func (c *Coordinator) ReduceTask(_ *RpcArgs, response *ReduceTaskResponse) error {
+func (c *Coordinator) ReduceTask(args *JobArgs, response *ReduceTaskResponse) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	fmt.Println("Received Reduce Job Request: ", args.WorkerId)
 
 	if countCompletedTask(c.MapTaskStatus) != len(c.files) {
 		return nil
@@ -63,9 +108,7 @@ func (c *Coordinator) ReduceTask(_ *RpcArgs, response *ReduceTaskResponse) error
 		return nil
 	}
 	for i, v := range c.ReduceTaskStatus {
-		if v == DONE {
-			continue
-		} else if v == PENDING && time.Now().Sub(c.ReduceTaskTime[i]) < time.Second*3 {
+		if v == DONE || v == PENDING {
 			continue
 		}
 		c.ReduceTaskStatus[i] = PENDING
@@ -145,5 +188,6 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 		MapTaskTime:      make([]time.Time, len(files)),
 		ReduceTaskTime:   make([]time.Time, nReduce)}
 	c.server()
+	go c.timeoutTask()
 	return &c
 }

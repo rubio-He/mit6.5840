@@ -36,46 +36,30 @@ func ihash(key string) int {
 }
 
 // Worker main/mrworker.go calls this function.
-func Worker(mapf func(string, string) []KeyValue,
-	reduce func(string, []string) string) {
+func Worker(mapf func(string, string) []KeyValue, reducef func(string, []string) string) {
 	for {
-		mapRpcResponse := MapTaskResponse{Done: false}
-		ok := call("Coordinator.MapTask", &RpcArgs{}, &mapRpcResponse)
+		response := JobResponse{}
+		ok := call("Coordinator.GetTask", &JobArgs{os.Getpid()}, &response)
 		if !ok {
 			os.Exit(1)
 		}
-		if mapRpcResponse.Done {
-			break
-		}
-		mapJob(mapf, &mapRpcResponse)
-		ok = call("Coordinator.Complete", &TaskCompletionArgs{Map, mapRpcResponse.TaskId}, &TaskCompletionResponse{})
-		if !ok {
-			log.Fatal("Failed to finish the map task.")
-		}
-		time.Sleep(time.Second)
-	}
-
-	for {
-		reduceRpcResponse := ReduceTaskResponse{Ready: false}
-		ok := call("Coordinator.ReduceTask", &RpcArgs{}, &reduceRpcResponse)
-		if !ok {
-			log.Printf("Map reduce job finished!")
-			break
-		}
-		if !reduceRpcResponse.Ready {
+		if response.TaskType == Map {
+			mapJob(mapf, &response)
+		} else if response.TaskType == Reduce {
+			reduceJob(reducef, &response)
+		} else {
+			time.Sleep(time.Second)
 			continue
 		}
-		reduceJob(reduce, &reduceRpcResponse)
-		ok = call("Coordinator.Complete", &TaskCompletionArgs{Reduce, reduceRpcResponse.TaskId}, &TaskCompletionResponse{})
+		ok = call("Coordinator.Complete", &TaskCompletionArgs{response.TaskType, response.TaskId}, &TaskCompletionResponse{})
 		if !ok {
-			log.Fatal("Failed to finish the reduce task.")
+			log.Fatal("Failed to finish the task.")
 		}
 		time.Sleep(time.Second)
 	}
-
 }
 
-func mapJob(mapf func(string, string) []KeyValue, response *MapTaskResponse) {
+func mapJob(mapf func(string, string) []KeyValue, response *JobResponse) {
 	filename := response.File
 	util.Println("Worker %d received Map Task: %d, reduce number: %d, %s",
 		os.Getpid(), response.TaskId, response.ReduceCount, filename)
@@ -110,8 +94,11 @@ func mapJob(mapf func(string, string) []KeyValue, response *MapTaskResponse) {
 	}
 }
 
-func reduceJob(reducef func(string, []string) string, response *ReduceTaskResponse) {
-	fileNames := response.FileNames
+func reduceJob(reducef func(string, []string) string, response *JobResponse) {
+	var fileNames []string
+	for j := 0; j < response.MapCount; j++ {
+		fileNames = append(fileNames, fmt.Sprintf("mr-%d-%d.txt", j, response.TaskId))
+	}
 
 	kva := []KeyValue{}
 	for _, fileName := range fileNames {

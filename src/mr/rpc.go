@@ -12,16 +12,20 @@ import "strconv"
 type TaskType int
 
 const (
-	Map TaskType = iota
+	Empty TaskType = iota
+	Map
 	Reduce
 )
 
-type RpcArgs struct{}
+type JobArgs struct {
+	WorkerId int
+}
 
-type MapTaskResponse struct {
-	Done        bool
+type JobResponse struct {
+	TaskType    TaskType
 	TaskId      int
 	ReduceCount int
+	MapCount    int
 	File        string
 }
 
