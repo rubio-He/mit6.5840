@@ -115,7 +115,6 @@ func reduceJob(reducef func(string, []string) string, response *JobResponse) {
 			}
 			kva = append(kva, kv)
 		}
-		os.Remove(fileName)
 	}
 
 	sort.Sort(ByKey(kva))
@@ -141,6 +140,9 @@ func reduceJob(reducef func(string, []string) string, response *JobResponse) {
 		// this is the correct format for each line of Reduce output.
 		fmt.Fprintf(ofile, "%v %v\n", kva[i].Key, output)
 		i = j
+	}
+	for _, file := range fileNames {
+		os.Remove(file)
 	}
 
 	ofile.Close()
