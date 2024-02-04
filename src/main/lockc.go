@@ -20,7 +20,7 @@ func main() {
 		if os.Args[1] == "-l" {
 			ok = ck.Lock(os.Args[4])
 		} else if os.Args[1] == "-u" {
-			ok = ck.Unlock(os.Args[4])
+			ok = ck.Unlock(os.Args[4])git stash
 		} else {
 			usage()
 		}
