@@ -47,18 +47,12 @@ var KvModel = porcupine.Model{
 		} else if inp.Op == 1 {
 			// put
 			return true, inp.Value
-<<<<<<< HEAD
 		} else if inp.Op == 2 {
 			// append
 			return true, (st + inp.Value)
 		} else {
 			// append with return value
 			return out.Value == st, (st + inp.Value)
-=======
-		} else {
-			// append
-			return true, (st + inp.Value)
->>>>>>> 842592d (First commit)
 		}
 	},
 	DescribeOperation: func(input, output interface{}) string {

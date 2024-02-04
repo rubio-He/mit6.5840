@@ -4,7 +4,6 @@ import "6.5840/labrpc"
 import "crypto/rand"
 import "math/big"
 
-
 type Clerk struct {
 	server *labrpc.ClientEnd
 	// You will have to modify this struct.
@@ -24,7 +23,7 @@ func MakeClerk(server *labrpc.ClientEnd) *Clerk {
 	return ck
 }
 
-// fetch the current value for a key.
+// Get fetch the current value for a key.
 // returns "" if the key does not exist.
 // keeps trying forever in the face of all other errors.
 //
@@ -35,9 +34,12 @@ func MakeClerk(server *labrpc.ClientEnd) *Clerk {
 // must match the declared types of the RPC handler function's
 // arguments. and reply must be passed as a pointer.
 func (ck *Clerk) Get(key string) string {
-
-	// You will have to modify this function.
-	return ""
+	reply := GetReply{}
+	if ok := ck.server.Call("KVServer.Get", &GetArgs{key}, &reply); ok {
+		return reply.Value
+	} else {
+		return ""
+	}
 }
 
 // shared by Put and Append.
@@ -50,7 +52,12 @@ func (ck *Clerk) Get(key string) string {
 // arguments. and reply must be passed as a pointer.
 func (ck *Clerk) PutAppend(key string, value string, op string) string {
 	// You will have to modify this function.
-	return ""
+	reply := GetReply{}
+	if ok := ck.server.Call("KVServer."+op, &PutAppendArgs{Key: key, Value: value}, &reply); ok {
+		return reply.Value
+	} else {
+		return ""
+	}
 }
 
 func (ck *Clerk) Put(key string, value string) {

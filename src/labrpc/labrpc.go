@@ -329,7 +329,6 @@ func (rn *Network) MakeEnd(endname interface{}) *ClientEnd {
 	return e
 }
 
-<<<<<<< HEAD
 func (rn *Network) DeleteEnd(endname interface{}) {
 	rn.mu.Lock()
 	defer rn.mu.Unlock()
@@ -342,8 +341,6 @@ func (rn *Network) DeleteEnd(endname interface{}) {
 	delete(rn.connections, endname)
 }
 
-=======
->>>>>>> 842592d (First commit)
 func (rn *Network) AddServer(servername interface{}, rs *Server) {
 	rn.mu.Lock()
 	defer rn.mu.Unlock()
