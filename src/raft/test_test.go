@@ -949,9 +949,15 @@ func internalChurn(t *testing.T, unreliable bool) {
 	defer cfg.cleanup()
 
 	if unreliable {
+<<<<<<< HEAD
+		cfg.begin("Test (3C): unreliable churn")
+	} else {
+		cfg.begin("Test (3C): churn")
+=======
 		cfg.begin("Test (2C): unreliable churn")
 	} else {
 		cfg.begin("Test (2C): churn")
+>>>>>>> 842592d (First commit)
 	}
 
 	stop := int32(0)

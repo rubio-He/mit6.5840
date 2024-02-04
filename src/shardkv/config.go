@@ -50,15 +50,30 @@ type group struct {
 	mendnames [][]string
 }
 
+<<<<<<< HEAD
+// a replicated shardctrler service.
+type ctrler struct {
+	n       int
+	servers []*shardctrler.ShardCtrler
+	names   []string
+	ck      *shardctrler.Clerk
+}
+
+=======
+>>>>>>> 842592d (First commit)
 type config struct {
 	mu    sync.Mutex
 	t     *testing.T
 	net   *labrpc.Network
 	start time.Time // time at which make_config() was called
 
+<<<<<<< HEAD
+	ctl *ctrler // shardctrler service
+=======
 	nctrlers      int
 	ctrlerservers []*shardctrler.ShardCtrler
 	mck           *shardctrler.Clerk
+>>>>>>> 842592d (First commit)
 
 	ngroups int
 	n       int // servers per k/v group
@@ -80,8 +95,13 @@ func (cfg *config) cleanup() {
 	for gi := 0; gi < cfg.ngroups; gi++ {
 		cfg.ShutdownGroup(gi)
 	}
+<<<<<<< HEAD
+	for i := 0; i < cfg.ctl.n; i++ {
+		cfg.ctl.servers[i].Kill()
+=======
 	for i := 0; i < cfg.nctrlers; i++ {
 		cfg.ctrlerservers[i].Kill()
+>>>>>>> 842592d (First commit)
 	}
 	cfg.net.Cleanup()
 	cfg.checkTimeout()
@@ -104,9 +124,15 @@ func (cfg *config) checklogs() {
 	}
 }
 
+<<<<<<< HEAD
+// controller server name for labrpc.
+func (ctl *ctrler) ctrlername(i int) string {
+	return ctl.names[i]
+=======
 // controler server name for labrpc.
 func (cfg *config) ctrlername(i int) string {
 	return "ctrler" + strconv.Itoa(i)
+>>>>>>> 842592d (First commit)
 }
 
 // shard server name for labrpc.
@@ -115,6 +141,19 @@ func (cfg *config) servername(gid int, i int) string {
 	return "server-" + strconv.Itoa(gid) + "-" + strconv.Itoa(i)
 }
 
+<<<<<<< HEAD
+func (cfg *config) makeClient(ctl *ctrler) *Clerk {
+	cfg.mu.Lock()
+	defer cfg.mu.Unlock()
+
+	// ClientEnds to talk to controller service.
+	ends := make([]*labrpc.ClientEnd, ctl.n)
+	endnames := make([]string, cfg.n)
+	for j := 0; j < ctl.n; j++ {
+		endnames[j] = randstring(20)
+		ends[j] = cfg.net.MakeEnd(endnames[j])
+		cfg.net.Connect(endnames[j], ctl.ctrlername(j))
+=======
 func (cfg *config) makeClient() *Clerk {
 	cfg.mu.Lock()
 	defer cfg.mu.Unlock()
@@ -126,6 +165,7 @@ func (cfg *config) makeClient() *Clerk {
 		endnames[j] = randstring(20)
 		ends[j] = cfg.net.MakeEnd(endnames[j])
 		cfg.net.Connect(endnames[j], cfg.ctrlername(j))
+>>>>>>> 842592d (First commit)
 		cfg.net.Enable(endnames[j], true)
 	}
 
@@ -222,12 +262,21 @@ func (cfg *config) StartServer(gi int, i int) {
 	}
 
 	// ends to talk to shardctrler service
+<<<<<<< HEAD
+	mends := make([]*labrpc.ClientEnd, cfg.ctl.n)
+	gg.mendnames[i] = make([]string, cfg.ctl.n)
+	for j := 0; j < cfg.ctl.n; j++ {
+		gg.mendnames[i][j] = randstring(20)
+		mends[j] = cfg.net.MakeEnd(gg.mendnames[i][j])
+		cfg.net.Connect(gg.mendnames[i][j], cfg.ctl.ctrlername(j))
+=======
 	mends := make([]*labrpc.ClientEnd, cfg.nctrlers)
 	gg.mendnames[i] = make([]string, cfg.nctrlers)
 	for j := 0; j < cfg.nctrlers; j++ {
 		gg.mendnames[i][j] = randstring(20)
 		mends[j] = cfg.net.MakeEnd(gg.mendnames[i][j])
 		cfg.net.Connect(gg.mendnames[i][j], cfg.ctrlername(j))
+>>>>>>> 842592d (First commit)
 		cfg.net.Enable(gg.mendnames[i][j], true)
 	}
 
@@ -267,6 +316,15 @@ func (cfg *config) StartGroup(gi int) {
 	}
 }
 
+<<<<<<< HEAD
+func (cfg *config) StartCtrlerServer(ctl *ctrler, i int) {
+	// ClientEnds to talk to other controller replicas.
+	ends := make([]*labrpc.ClientEnd, ctl.n)
+	for j := 0; j < ctl.n; j++ {
+		endname := randstring(20)
+		ends[j] = cfg.net.MakeEnd(endname)
+		cfg.net.Connect(endname, ctl.ctrlername(j))
+=======
 func (cfg *config) StartCtrlerserver(i int) {
 	// ClientEnds to talk to other controler replicas.
 	ends := make([]*labrpc.ClientEnd, cfg.nctrlers)
@@ -274,11 +332,31 @@ func (cfg *config) StartCtrlerserver(i int) {
 		endname := randstring(20)
 		ends[j] = cfg.net.MakeEnd(endname)
 		cfg.net.Connect(endname, cfg.ctrlername(j))
+>>>>>>> 842592d (First commit)
 		cfg.net.Enable(endname, true)
 	}
 
 	p := raft.MakePersister()
 
+<<<<<<< HEAD
+	ctl.servers[i] = shardctrler.StartServer(ends, i, p)
+
+	msvc := labrpc.MakeService(ctl.servers[i])
+	rfsvc := labrpc.MakeService(ctl.servers[i].Raft())
+	srv := labrpc.MakeServer()
+	srv.AddService(msvc)
+	srv.AddService(rfsvc)
+	cfg.net.AddServer(ctl.ctrlername(i), srv)
+}
+
+func (cfg *config) ctrlerclerk(ctl *ctrler) *shardctrler.Clerk {
+	// ClientEnds to talk to ctrler service.
+	ends := make([]*labrpc.ClientEnd, ctl.n)
+	for j := 0; j < ctl.n; j++ {
+		name := randstring(20)
+		ends[j] = cfg.net.MakeEnd(name)
+		cfg.net.Connect(name, ctl.ctrlername(j))
+=======
 	cfg.ctrlerservers[i] = shardctrler.StartServer(ends, i, p)
 
 	msvc := labrpc.MakeService(cfg.ctrlerservers[i])
@@ -296,6 +374,7 @@ func (cfg *config) shardclerk() *shardctrler.Clerk {
 		name := randstring(20)
 		ends[j] = cfg.net.MakeEnd(name)
 		cfg.net.Connect(name, cfg.ctrlername(j))
+>>>>>>> 842592d (First commit)
 		cfg.net.Enable(name, true)
 	}
 
@@ -304,10 +383,21 @@ func (cfg *config) shardclerk() *shardctrler.Clerk {
 
 // tell the shardctrler that a group is joining.
 func (cfg *config) join(gi int) {
+<<<<<<< HEAD
+	cfg.joinm([]int{gi}, cfg.ctl)
+}
+
+func (cfg *config) ctljoin(gi int, ctl *ctrler) {
+	cfg.joinm([]int{gi}, ctl)
+}
+
+func (cfg *config) joinm(gis []int, ctl *ctrler) {
+=======
 	cfg.joinm([]int{gi})
 }
 
 func (cfg *config) joinm(gis []int) {
+>>>>>>> 842592d (First commit)
 	m := make(map[int][]string, len(gis))
 	for _, g := range gis {
 		gid := cfg.groups[g].gid
@@ -317,7 +407,11 @@ func (cfg *config) joinm(gis []int) {
 		}
 		m[gid] = servernames
 	}
+<<<<<<< HEAD
+	ctl.ck.Join(m)
+=======
 	cfg.mck.Join(m)
+>>>>>>> 842592d (First commit)
 }
 
 // tell the shardctrler that a group is leaving.
@@ -330,7 +424,26 @@ func (cfg *config) leavem(gis []int) {
 	for _, g := range gis {
 		gids = append(gids, cfg.groups[g].gid)
 	}
+<<<<<<< HEAD
+	cfg.ctl.ck.Leave(gids)
+}
+
+func (cfg *config) StartCtrlerService() *ctrler {
+	ctl := &ctrler{}
+	ctl.n = 3
+	ctl.servers = make([]*shardctrler.ShardCtrler, ctl.n)
+	ctl.names = make([]string, ctl.n)
+	for i := 0; i < ctl.n; i++ {
+		ctl.names[i] = "ctlr-" + randstring(20)
+	}
+	for i := 0; i < ctl.n; i++ {
+		cfg.StartCtrlerServer(ctl, i)
+	}
+	ctl.ck = cfg.ctrlerclerk(ctl)
+	return ctl
+=======
 	cfg.mck.Leave(gids)
+>>>>>>> 842592d (First commit)
 }
 
 var ncpu_once sync.Once
@@ -349,6 +462,10 @@ func make_config(t *testing.T, n int, unreliable bool, maxraftstate int) *config
 	cfg.net = labrpc.MakeNetwork()
 	cfg.start = time.Now()
 
+<<<<<<< HEAD
+	// controller and its clerk
+	cfg.ctl = cfg.StartCtrlerService()
+=======
 	// controler
 	cfg.nctrlers = 3
 	cfg.ctrlerservers = make([]*shardctrler.ShardCtrler, cfg.nctrlers)
@@ -356,6 +473,7 @@ func make_config(t *testing.T, n int, unreliable bool, maxraftstate int) *config
 		cfg.StartCtrlerserver(i)
 	}
 	cfg.mck = cfg.shardclerk()
+>>>>>>> 842592d (First commit)
 
 	cfg.ngroups = 3
 	cfg.groups = make([]*group, cfg.ngroups)
@@ -367,7 +485,11 @@ func make_config(t *testing.T, n int, unreliable bool, maxraftstate int) *config
 		gg.servers = make([]*ShardKV, cfg.n)
 		gg.saved = make([]*raft.Persister, cfg.n)
 		gg.endnames = make([][]string, cfg.n)
+<<<<<<< HEAD
+		gg.mendnames = make([][]string, cfg.ctl.n)
+=======
 		gg.mendnames = make([][]string, cfg.nctrlers)
+>>>>>>> 842592d (First commit)
 		for i := 0; i < cfg.n; i++ {
 			cfg.StartServer(gi, i)
 		}
