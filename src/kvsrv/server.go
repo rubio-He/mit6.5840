@@ -29,19 +29,14 @@ type KVServer struct {
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
-
-	//DPrintf("Receive client GET request key %s from %d at uuid %d", args.Key, args.ClientId, args.Uuid)
-
 	if val, ok := kv.kv[args.Key]; ok {
 		reply.Value = val
 	}
-	DPrintf("After GET kv '%s'", kv.kv)
 }
 
 func (kv *KVServer) Put(args *PutAppendArgs, reply *PutAppendReply) {
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
-	DPrintf("Receive client put request key %s value %s from %d at uuid %d", args.Key, args.Value, args.ClientId, args.Uuid)
 	if uuid, ok := kv.pendingOp[args.ClientId]; ok {
 		if uuid == args.Uuid {
 			return
@@ -49,13 +44,11 @@ func (kv *KVServer) Put(args *PutAppendArgs, reply *PutAppendReply) {
 	}
 	kv.pendingOp[args.ClientId] = args.Uuid
 	kv.kv[args.Key] = args.Value
-	DPrintf("After put kv '%s'", kv.kv)
 }
 
 func (kv *KVServer) Append(args *PutAppendArgs, reply *PutAppendReply) {
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
-	DPrintf("Receive client append request key %s value %s from %d at uuid %d", args.Key, args.Value, args.ClientId, args.Uuid)
 	if uuid, ok := kv.pendingOp[args.ClientId]; ok {
 		if uuid == args.Uuid {
 			reply.Value = kv.pendingOldV[Job{args.Uuid, args.ClientId}]
@@ -77,7 +70,6 @@ func (kv *KVServer) Append(args *PutAppendArgs, reply *PutAppendReply) {
 	} else {
 		kv.kv[args.Key] = args.Value
 	}
-	DPrintf("After put kv '%s'", kv.kv)
 }
 
 func StartKVServer() *KVServer {
