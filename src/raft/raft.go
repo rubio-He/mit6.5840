@@ -75,14 +75,14 @@ type Raft struct {
 	// state
 	currentTerm int
 	voteFor     int
-	log         []Log
+	// log         []Log
 
-	commitIndex int
-	lastApplied int
+	// commitIndex int
+	// lastApplied int
 
-	nextIndex  []int
-	matchIndex []int
-
+	// nextIndex  []int
+	// matchIndex []int
+	//
 	state           State
 	electionTimeout time.Time
 }
@@ -158,6 +158,20 @@ type RequestVoteReply struct {
 	voteGranted bool // true means candidate receive the vote
 }
 
+type AppendEntriesArgs struct {
+	term         int
+	leaderId     int
+	prevLogIndex int
+
+	// TODO: Entries log enrties to store.
+	leaderCommit int //  leader commit index.
+}
+
+type AppendEntriesReply struct {
+	term    int
+	success bool
+}
+
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
@@ -170,12 +184,16 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	}
 
 	// Grant the vote if the candidate logs is up-to-date with the voters'.
-	if (rf.voteFor == args.candidateId || rf.voteFor == -1) &&
-		args.lastLogIndex >= len(rf.log) &&
-		args.lastLogTerm >= rf.log[len(rf.log)-1].term {
+	if rf.voteFor == args.candidateId || rf.voteFor == -1 {
+		//   &&
+		// args.lastLogIndex >= len(rf.log) &&
+		// args.lastLogTerm >= rf.log[len(rf.log)-1].currentTerm
 		rf.voteFor = args.candidateId
 		reply.voteGranted = true
 	}
+}
+
+func (rf *Raft) AppendEntries() {
 }
 
 // example code to send a RequestVote RPC to a server.
@@ -254,14 +272,16 @@ func (rf *Raft) killed() bool {
 func (rf *Raft) ticker() {
 	for !rf.killed() {
 
+		// Start election.
 		if rf.electionTimeout.After(time.Now()) {
-			args := RequestVoteArgs{
-				term:         rf.currentTerm,
-				candidateId:  rf.me,
-				lastLogIndex: len(rf.log),
-				lastLogTerm:  rf.log[len(rf.log)-1].term,
-			}
 			rf.state = CANDIDATE
+			rf.currentTerm++
+			args := RequestVoteArgs{
+				term:        rf.currentTerm,
+				candidateId: rf.me,
+				// lastLogIndex: len(rf.log),
+				// lastLogTerm:  rf.log[len(rf.log)-1].term,
+			}
 			votes := 0
 			for idx := range rf.peers {
 				reply := RequestVoteReply{}
@@ -273,7 +293,6 @@ func (rf *Raft) ticker() {
 
 			if votes > len(rf.peers) {
 				rf.state = LEADER
-				break
 			}
 		}
 		// pause for a random amount of time between 50 and 350
