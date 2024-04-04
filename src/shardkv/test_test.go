@@ -21,22 +21,13 @@ func check(t *testing.T, ck *Clerk, key string, value string) {
 }
 
 // test static 2-way sharding, without shard movement.
-<<<<<<< HEAD
 func TestStaticShards5A(t *testing.T) {
 	fmt.Printf("Test (5A): static shards ...\n")
-=======
-func TestStaticShards(t *testing.T) {
-	fmt.Printf("Test: static shards ...\n")
->>>>>>> 842592d (First commit)
 
 	cfg := make_config(t, 3, false, -1)
 	defer cfg.cleanup()
 
-<<<<<<< HEAD
 	ck := cfg.makeClient(cfg.ctl)
-=======
-	ck := cfg.makeClient()
->>>>>>> 842592d (First commit)
 
 	cfg.join(0)
 	cfg.join(1)
@@ -61,11 +52,7 @@ func TestStaticShards(t *testing.T) {
 
 	ch := make(chan string)
 	for xi := 0; xi < n; xi++ {
-<<<<<<< HEAD
 		ck1 := cfg.makeClient(cfg.ctl) // only one call allowed per client
-=======
-		ck1 := cfg.makeClient() // only one call allowed per client
->>>>>>> 842592d (First commit)
 		go func(i int) {
 			v := ck1.Get(ka[i])
 			if v != va[i] {
@@ -92,14 +79,9 @@ func TestStaticShards(t *testing.T) {
 		}
 	}
 
-<<<<<<< HEAD
 	if ndone != n/2 {
 		t.Fatalf("expected %v completions with one shard dead; got %v\n",
 			n/2, ndone)
-=======
-	if ndone != 5 {
-		t.Fatalf("expected 5 completions with one shard dead; got %v\n", ndone)
->>>>>>> 842592d (First commit)
 	}
 
 	// bring the crashed shard/group back to life.
@@ -111,20 +93,14 @@ func TestStaticShards(t *testing.T) {
 	fmt.Printf("  ... Passed\n")
 }
 
-<<<<<<< HEAD
 // do servers reject operations on shards for
 // which they are not responsible?
 func TestRejection5A(t *testing.T) {
 	fmt.Printf("Test (5A): rejection ...\n")
-=======
-func TestJoinLeave(t *testing.T) {
-	fmt.Printf("Test: join then leave ...\n")
->>>>>>> 842592d (First commit)
 
 	cfg := make_config(t, 3, false, -1)
 	defer cfg.cleanup()
 
-<<<<<<< HEAD
 	ck := cfg.makeClient(cfg.ctl)
 
 	cfg.join(0)
@@ -205,9 +181,6 @@ func TestJoinLeave5B(t *testing.T) {
 	defer cfg.cleanup()
 
 	ck := cfg.makeClient(cfg.ctl)
-=======
-	ck := cfg.makeClient()
->>>>>>> 842592d (First commit)
 
 	cfg.join(0)
 
@@ -254,22 +227,13 @@ func TestJoinLeave5B(t *testing.T) {
 	fmt.Printf("  ... Passed\n")
 }
 
-<<<<<<< HEAD
 func TestSnapshot5B(t *testing.T) {
 	fmt.Printf("Test (5B): snapshots, join, and leave ...\n")
-=======
-func TestSnapshot(t *testing.T) {
-	fmt.Printf("Test: snapshots, join, and leave ...\n")
->>>>>>> 842592d (First commit)
 
 	cfg := make_config(t, 3, false, 1000)
 	defer cfg.cleanup()
 
-<<<<<<< HEAD
 	ck := cfg.makeClient(cfg.ctl)
-=======
-	ck := cfg.makeClient()
->>>>>>> 842592d (First commit)
 
 	cfg.join(0)
 
@@ -331,22 +295,13 @@ func TestSnapshot(t *testing.T) {
 	fmt.Printf("  ... Passed\n")
 }
 
-<<<<<<< HEAD
 func TestMissChange5B(t *testing.T) {
 	fmt.Printf("Test (5B): servers miss configuration changes...\n")
-=======
-func TestMissChange(t *testing.T) {
-	fmt.Printf("Test: servers miss configuration changes...\n")
->>>>>>> 842592d (First commit)
 
 	cfg := make_config(t, 3, false, 1000)
 	defer cfg.cleanup()
 
-<<<<<<< HEAD
 	ck := cfg.makeClient(cfg.ctl)
-=======
-	ck := cfg.makeClient()
->>>>>>> 842592d (First commit)
 
 	cfg.join(0)
 
@@ -426,22 +381,13 @@ func TestMissChange(t *testing.T) {
 	fmt.Printf("  ... Passed\n")
 }
 
-<<<<<<< HEAD
 func TestConcurrent1_5B(t *testing.T) {
 	fmt.Printf("Test (5B): concurrent puts and configuration changes...\n")
-=======
-func TestConcurrent1(t *testing.T) {
-	fmt.Printf("Test: concurrent puts and configuration changes...\n")
->>>>>>> 842592d (First commit)
 
 	cfg := make_config(t, 3, false, 100)
 	defer cfg.cleanup()
 
-<<<<<<< HEAD
 	ck := cfg.makeClient(cfg.ctl)
-=======
-	ck := cfg.makeClient()
->>>>>>> 842592d (First commit)
 
 	cfg.join(0)
 
@@ -459,11 +405,7 @@ func TestConcurrent1(t *testing.T) {
 
 	ff := func(i int) {
 		defer func() { ch <- true }()
-<<<<<<< HEAD
 		ck1 := cfg.makeClient(cfg.ctl)
-=======
-		ck1 := cfg.makeClient()
->>>>>>> 842592d (First commit)
 		for atomic.LoadInt32(&done) == 0 {
 			x := randstring(5)
 			ck1.Append(ka[i], x)
@@ -518,22 +460,13 @@ func TestConcurrent1(t *testing.T) {
 
 // this tests the various sources from which a re-starting
 // group might need to fetch shard contents.
-<<<<<<< HEAD
 func TestConcurrent2_5B(t *testing.T) {
 	fmt.Printf("Test (5B): more concurrent puts and configuration changes...\n")
-=======
-func TestConcurrent2(t *testing.T) {
-	fmt.Printf("Test: more concurrent puts and configuration changes...\n")
->>>>>>> 842592d (First commit)
 
 	cfg := make_config(t, 3, false, -1)
 	defer cfg.cleanup()
 
-<<<<<<< HEAD
 	ck := cfg.makeClient(cfg.ctl)
-=======
-	ck := cfg.makeClient()
->>>>>>> 842592d (First commit)
 
 	cfg.join(1)
 	cfg.join(0)
@@ -562,11 +495,7 @@ func TestConcurrent2(t *testing.T) {
 	}
 
 	for i := 0; i < n; i++ {
-<<<<<<< HEAD
 		ck1 := cfg.makeClient(cfg.ctl)
-=======
-		ck1 := cfg.makeClient()
->>>>>>> 842592d (First commit)
 		go ff(i, ck1)
 	}
 
@@ -602,22 +531,13 @@ func TestConcurrent2(t *testing.T) {
 	fmt.Printf("  ... Passed\n")
 }
 
-<<<<<<< HEAD
 func TestConcurrent3_5B(t *testing.T) {
 	fmt.Printf("Test (5B): concurrent configuration change and restart...\n")
-=======
-func TestConcurrent3(t *testing.T) {
-	fmt.Printf("Test: concurrent configuration change and restart...\n")
->>>>>>> 842592d (First commit)
 
 	cfg := make_config(t, 3, false, 300)
 	defer cfg.cleanup()
 
-<<<<<<< HEAD
 	ck := cfg.makeClient(cfg.ctl)
-=======
-	ck := cfg.makeClient()
->>>>>>> 842592d (First commit)
 
 	cfg.join(0)
 
@@ -643,11 +563,7 @@ func TestConcurrent3(t *testing.T) {
 	}
 
 	for i := 0; i < n; i++ {
-<<<<<<< HEAD
 		ck1 := cfg.makeClient(cfg.ctl)
-=======
-		ck1 := cfg.makeClient()
->>>>>>> 842592d (First commit)
 		go ff(i, ck1)
 	}
 
@@ -683,22 +599,13 @@ func TestConcurrent3(t *testing.T) {
 	fmt.Printf("  ... Passed\n")
 }
 
-<<<<<<< HEAD
 func TestUnreliable1_5B(t *testing.T) {
 	fmt.Printf("Test (5B): unreliable 1...\n")
-=======
-func TestUnreliable1(t *testing.T) {
-	fmt.Printf("Test: unreliable 1...\n")
->>>>>>> 842592d (First commit)
 
 	cfg := make_config(t, 3, true, 100)
 	defer cfg.cleanup()
 
-<<<<<<< HEAD
 	ck := cfg.makeClient(cfg.ctl)
-=======
-	ck := cfg.makeClient()
->>>>>>> 842592d (First commit)
 
 	cfg.join(0)
 
@@ -734,22 +641,13 @@ func TestUnreliable1(t *testing.T) {
 	fmt.Printf("  ... Passed\n")
 }
 
-<<<<<<< HEAD
 func TestUnreliable2_5B(t *testing.T) {
 	fmt.Printf("Test (5B): unreliable 2...\n")
-=======
-func TestUnreliable2(t *testing.T) {
-	fmt.Printf("Test: unreliable 2...\n")
->>>>>>> 842592d (First commit)
 
 	cfg := make_config(t, 3, true, 100)
 	defer cfg.cleanup()
 
-<<<<<<< HEAD
 	ck := cfg.makeClient(cfg.ctl)
-=======
-	ck := cfg.makeClient()
->>>>>>> 842592d (First commit)
 
 	cfg.join(0)
 
@@ -767,11 +665,7 @@ func TestUnreliable2(t *testing.T) {
 
 	ff := func(i int) {
 		defer func() { ch <- true }()
-<<<<<<< HEAD
 		ck1 := cfg.makeClient(cfg.ctl)
-=======
-		ck1 := cfg.makeClient()
->>>>>>> 842592d (First commit)
 		for atomic.LoadInt32(&done) == 0 {
 			x := randstring(5)
 			ck1.Append(ka[i], x)
@@ -810,13 +704,8 @@ func TestUnreliable2(t *testing.T) {
 	fmt.Printf("  ... Passed\n")
 }
 
-<<<<<<< HEAD
 func TestUnreliable3_5B(t *testing.T) {
 	fmt.Printf("Test (5B): unreliable 3...\n")
-=======
-func TestUnreliable3(t *testing.T) {
-	fmt.Printf("Test: unreliable 3...\n")
->>>>>>> 842592d (First commit)
 
 	cfg := make_config(t, 3, true, 100)
 	defer cfg.cleanup()
@@ -825,11 +714,7 @@ func TestUnreliable3(t *testing.T) {
 	var operations []porcupine.Operation
 	var opMu sync.Mutex
 
-<<<<<<< HEAD
 	ck := cfg.makeClient(cfg.ctl)
-=======
-	ck := cfg.makeClient()
->>>>>>> 842592d (First commit)
 
 	cfg.join(0)
 
@@ -853,11 +738,7 @@ func TestUnreliable3(t *testing.T) {
 
 	ff := func(i int) {
 		defer func() { ch <- true }()
-<<<<<<< HEAD
 		ck1 := cfg.makeClient(cfg.ctl)
-=======
-		ck1 := cfg.makeClient()
->>>>>>> 842592d (First commit)
 		for atomic.LoadInt32(&done) == 0 {
 			ki := rand.Int() % n
 			nv := randstring(5)
@@ -937,11 +818,7 @@ func TestChallenge1Delete(t *testing.T) {
 	cfg := make_config(t, 3, false, 1)
 	defer cfg.cleanup()
 
-<<<<<<< HEAD
 	ck := cfg.makeClient(cfg.ctl)
-=======
-	ck := cfg.makeClient()
->>>>>>> 842592d (First commit)
 
 	cfg.join(0)
 
@@ -1024,11 +901,7 @@ func TestChallenge2Unaffected(t *testing.T) {
 	cfg := make_config(t, 3, true, 100)
 	defer cfg.cleanup()
 
-<<<<<<< HEAD
 	ck := cfg.makeClient(cfg.ctl)
-=======
-	ck := cfg.makeClient()
->>>>>>> 842592d (First commit)
 
 	// JOIN 100
 	cfg.join(0)
@@ -1047,11 +920,7 @@ func TestChallenge2Unaffected(t *testing.T) {
 	cfg.join(1)
 
 	// QUERY to find shards now owned by 101
-<<<<<<< HEAD
 	c := cfg.ctl.ck.Query(-1)
-=======
-	c := cfg.mck.Query(-1)
->>>>>>> 842592d (First commit)
 	owned := make(map[int]bool, n)
 	for s, gid := range c.Shards {
 		owned[s] = gid == cfg.groups[1].gid
@@ -1100,17 +969,10 @@ func TestChallenge2Partial(t *testing.T) {
 	cfg := make_config(t, 3, true, 100)
 	defer cfg.cleanup()
 
-<<<<<<< HEAD
 	ck := cfg.makeClient(cfg.ctl)
 
 	// JOIN 100 + 101 + 102
 	cfg.joinm([]int{0, 1, 2}, cfg.ctl)
-=======
-	ck := cfg.makeClient()
-
-	// JOIN 100 + 101 + 102
-	cfg.joinm([]int{0, 1, 2})
->>>>>>> 842592d (First commit)
 
 	// Give the implementation some time to reconfigure
 	<-time.After(1 * time.Second)
@@ -1126,11 +988,7 @@ func TestChallenge2Partial(t *testing.T) {
 	}
 
 	// QUERY to find shards owned by 102
-<<<<<<< HEAD
 	c := cfg.ctl.ck.Query(-1)
-=======
-	c := cfg.mck.Query(-1)
->>>>>>> 842592d (First commit)
 	owned := make(map[int]bool, n)
 	for s, gid := range c.Shards {
 		owned[s] = gid == cfg.groups[2].gid

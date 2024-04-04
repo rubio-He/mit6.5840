@@ -82,11 +82,7 @@ func (ck *Clerk) Get(key string) string {
 			}
 		}
 		time.Sleep(100 * time.Millisecond)
-<<<<<<< HEAD
 		// ask controller for the latest configuration.
-=======
-		// ask controler for the latest configuration.
->>>>>>> 842592d (First commit)
 		ck.config = ck.sm.Query(-1)
 	}
 
@@ -100,7 +96,6 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 	args.Key = key
 	args.Value = value
 	args.Op = op
-
 
 	for {
 		shard := key2shard(key)
@@ -120,11 +115,7 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 			}
 		}
 		time.Sleep(100 * time.Millisecond)
-<<<<<<< HEAD
 		// ask controller for the latest configuration.
-=======
-		// ask controler for the latest configuration.
->>>>>>> 842592d (First commit)
 		ck.config = ck.sm.Query(-1)
 	}
 }
