@@ -293,7 +293,10 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 // should call killed() to check whether it should stop.
 func (rf *Raft) Kill() {
 	atomic.StoreInt32(&rf.dead, 1)
-	// Your code here, if desired.
+	rf.mu.Lock()
+	rf.state = FOLLOWER
+	rf.voteFor = -1
+	rf.mu.Unlock()
 }
 
 func (rf *Raft) killed() bool {
@@ -303,13 +306,21 @@ func (rf *Raft) killed() bool {
 
 func (rf *Raft) ticker() {
 	for !rf.killed() {
+		rf.mu.Lock()
+		state := rf.state
+		timeout := rf.electionTimeout
+		rf.mu.Unlock()
 		// Start election.
-		if rf.state != LEADER && rf.voteFor == -1 && time.Now().After(rf.electionTimeout) {
+
+		if state != LEADER && time.Now().After(timeout) {
 			util.Println("%d start request for voting", rf.me)
+			rf.mu.Lock()
 			rf.state = CANDIDATE
 			rf.currentTerm++
+			term := rf.currentTerm
+			rf.mu.Unlock()
 			args := RequestVoteArgs{
-				Term:        rf.currentTerm,
+				Term:        term,
 				CandidateId: rf.me,
 				// lastLogIndex: len(rf.log),
 				// lastLogTerm:  rf.log[len(rf.log)-1].Term,
@@ -330,7 +341,6 @@ func (rf *Raft) ticker() {
 				util.Println("%d Became leader after receiving votes", rf.me)
 			} else {
 				rf.voteFor = -1
-				rf.state = FOLLOWER
 				rf.electionTimeout = time.Now().Add(getElectionTimeout())
 			}
 		}
@@ -353,9 +363,11 @@ func (rf *Raft) heartbeat() {
 				}
 			}
 			if newLeader {
+				rf.mu.Lock()
 				rf.state = FOLLOWER
 				rf.electionTimeout = time.Now().Add(getElectionTimeout())
 				rf.voteFor = -1
+				rf.mu.Unlock()
 			}
 		} else {
 			break
