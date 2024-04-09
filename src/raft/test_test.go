@@ -9,6 +9,7 @@ package raft
 //
 
 import (
+	"6.5840/util"
 	"fmt"
 	"math/rand"
 	"sync"
@@ -65,6 +66,7 @@ func TestReElection3A(t *testing.T) {
 	cfg.disconnect(leader1)
 	cfg.checkOneLeader()
 
+	util.Println("test2")
 	// if the old leader rejoins, that shouldn't
 	// disturb the new leader. and the old leader
 	// should switch to follower.
@@ -73,6 +75,7 @@ func TestReElection3A(t *testing.T) {
 
 	// if there's no quorum, no new leader should
 	// be elected.
+	util.Println("test3")
 	cfg.disconnect(leader2)
 	cfg.disconnect((leader2 + 1) % servers)
 	time.Sleep(2 * RaftElectionTimeout)
