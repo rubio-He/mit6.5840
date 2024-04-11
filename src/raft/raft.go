@@ -182,23 +182,16 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 
 	// Not grant vote if voter's Term is greater than the candidate.
 	if args.Term < rf.currentTerm {
-		util.Debug(rf.me, "receive the %d 's request of %d term, less than %d. REJECT", args.CandidateId, args.Term, rf.currentTerm)
 		reply.VoteGranted = false
 		reply.Term = rf.currentTerm
 		return
-	}
-
-	// Grant the vote if the candidate logs is up-to-date with the voters'.
-	if rf.voteFor == args.CandidateId || rf.voteFor == -1 {
-		util.Debug(rf.me, "receive the %d's request of %d term. APPROVED", args.CandidateId, args.Term)
+	} else if args.Term > rf.currentTerm || rf.voteFor == args.CandidateId || rf.voteFor == -1 {
+		reply.VoteGranted = true
+		reply.Term = args.Term
+		rf.currentTerm = args.Term
 		rf.voteFor = args.CandidateId
 		rf.electionTimeout = time.Now().Add(getElectionTimeout())
-		rf.currentTerm = args.Term
-
-		reply.VoteGranted = true
-		reply.Term = rf.currentTerm
-	} else {
-		util.Println("%d rf receive the %d 's request of %d term. But I already voted for %d", rf.me, args.CandidateId, args.Term, rf.voteFor)
+		return
 	}
 }
 
@@ -307,13 +300,11 @@ func (rf *Raft) ticker() {
 		state := rf.state
 		rf.mu.Unlock()
 		if state == FOLLOWER || state == CANDIDATE {
-			util.Debug(rf.me, "I am a follower, trying to run a election.")
 			rf.mu.Lock()
 			timeout := rf.electionTimeout
 			rf.mu.Unlock()
 
 			if time.Now().Before(timeout) {
-				util.Debug(rf.me, "Fail beginning a election, because my timeout is %s.", timeout.Format(time.DateTime))
 				continue
 			}
 
@@ -325,6 +316,7 @@ func (rf *Raft) ticker() {
 			rf.mu.Unlock()
 
 			votes := 0
+			util.Debug(rf.me, "Start election")
 			for idx := range rf.peers {
 				go func(i int) {
 					args := RequestVoteArgs{
@@ -332,6 +324,7 @@ func (rf *Raft) ticker() {
 						CandidateId: rf.me,
 					}
 					reply := RequestVoteReply{}
+					util.Debug(rf.me, "Sending requestVote to CLIENT(%d)", i)
 					ok := rf.sendRequestVote(i, &args, &reply)
 
 					rf.mu.Lock()
@@ -359,8 +352,10 @@ func (rf *Raft) ticker() {
 				}(idx)
 			}
 			util.Debug(rf.me, "Goroutine sleeping")
-			rf.electionTimeout = time.Now().Add(getElectionTimeout())
-			time.Sleep(getElectionTimeout())
+
+			electionTimeout := getElectionTimeout()
+			rf.electionTimeout = time.Now().Add(electionTimeout)
+			time.Sleep(electionTimeout)
 		}
 	}
 }

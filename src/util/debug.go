@@ -6,7 +6,7 @@ import (
 )
 
 const (
-	debugMode = false
+	debugMode = true
 )
 
 func Println(str string, a ...any) {
