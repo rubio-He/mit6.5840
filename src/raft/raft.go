@@ -191,6 +191,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		rf.currentTerm = args.Term
 		rf.voteFor = args.CandidateId
 		rf.electionTimeout = time.Now().Add(getElectionTimeout())
+		rf.state = FOLLOWER
 		return
 	}
 }
@@ -311,13 +312,16 @@ func (rf *Raft) ticker() {
 			rf.mu.Lock()
 			rf.state = CANDIDATE
 			rf.currentTerm++
-			rf.voteFor = -1
+			rf.voteFor = rf.me
 			term := rf.currentTerm
 			rf.mu.Unlock()
 
-			votes := 0
+			votes := 1
 			util.Debug(rf.me, "Start election")
 			for idx := range rf.peers {
+				if idx == rf.me {
+					continue
+				}
 				go func(i int) {
 					args := RequestVoteArgs{
 						Term:        term,
@@ -351,10 +355,10 @@ func (rf *Raft) ticker() {
 					}
 				}(idx)
 			}
-			util.Debug(rf.me, "Goroutine sleeping")
-
+			rf.mu.Lock()
 			electionTimeout := getElectionTimeout()
 			rf.electionTimeout = time.Now().Add(electionTimeout)
+			rf.mu.Unlock()
 			time.Sleep(electionTimeout)
 		}
 	}
@@ -385,7 +389,6 @@ func (rf *Raft) heartbeat() {
 				if state != LEADER {
 					return
 				}
-
 				if ok && !reply.Success {
 					rf.largerTerm(reply.Term)
 				}
