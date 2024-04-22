@@ -372,7 +372,7 @@ func (rf *Raft) ticker() {
 			rf.state = CANDIDATE
 			rf.currentTerm++
 			rf.voteFor = rf.me
-			term := rf.currentTerm
+			currentTerm := rf.currentTerm
 			rf.mu.Unlock()
 
 			votes := 1
@@ -380,43 +380,42 @@ func (rf *Raft) ticker() {
 				if idx == rf.me {
 					continue
 				}
-				go func(i int) {
+				go func(i, currentTerm int) {
 					args := RequestVoteArgs{
-						Term:        term,
+						Term:        currentTerm,
 						CandidateId: rf.me,
 					}
 					reply := RequestVoteReply{}
 					ok := rf.sendRequestVote(i, &args, &reply)
 
-					rf.mu.Lock()
-					state := rf.state
-					currentTerm := rf.currentTerm
-					rf.mu.Unlock()
-					if state == FOLLOWER || state == LEADER {
+					if !rf.isCandidate() || ok && rf.receiveHigherTerm(reply.Term) {
 						return
 					}
+
 					if ok && reply.VoteGranted {
-						rf.mu.Lock()
-						votes++
-						v := votes
-						rf.mu.Unlock()
-						if v > len(rf.peers)/2 {
-							rf.mu.Lock()
-							rf.debug(EVENT, "Become a leader.")
-							rf.state = LEADER
-							rf.mu.Unlock()
-							go rf.heartbeat()
-						}
-					} else if ok && reply.Term > currentTerm {
-						rf.largerTerm(reply.Term)
+						rf.electionCounting(&votes)
 					}
-				}(idx)
+				}(idx, currentTerm)
 			}
 			rf.mu.Lock()
 			electionTimeout := getElectionTimeout()
 			rf.electionTimeout = time.Now().Add(electionTimeout)
 			rf.mu.Unlock()
 			time.Sleep(electionTimeout)
+		}
+	}
+}
+
+func (rf *Raft) electionCounting(votes *int) {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	*votes++
+	if *votes > len(rf.peers)/2 {
+		if rf.state != LEADER {
+			rf.debug(EVENT|VOTING, "Become a leader.")
+			rf.state = LEADER
+			go rf.heartbeat()
 		}
 	}
 }
@@ -450,43 +449,39 @@ func (rf *Raft) replicateLogs(cmd interface{}) {
 			}
 
 			reply := &AppendEntriesReply{}
-
 			ok := rf.sendAppendEntries(i, &args, reply)
 
-			rf.mu.Lock()
-			state := rf.state
-			currentTerm := rf.currentTerm
-			rf.mu.Unlock()
-			if state != LEADER {
+			if !rf.isLeader() || ok && !reply.Success && rf.receiveHigherTerm(reply.Term) {
 				return
-			}
-			if ok && !reply.Success && reply.Term > currentTerm {
-				rf.largerTerm(reply.Term)
 			}
 
 			if reply.Success {
-				rf.mu.Lock()
-				rf.debug(EVENT, "Receive success replicate reponse, now total Cnt is %d", successCnt)
-				successCnt += 1
-
-				// Leader will commit the entry if find majority followers append the entries.
-				if successCnt > len(rf.peers)/2 {
-					rf.commitIndex = max(rf.commitIndex, logIndex)
-					if logIndex == rf.lastApplied+1 {
-						msg := ApplyMsg{
-							CommandValid: true,
-							Command:      cmd,
-							CommandIndex: logIndex,
-						}
-						rf.applyCh <- msg
-						rf.lastApplied = logIndex
-					}
-				}
-				rf.debugState()
-				rf.mu.Unlock()
+				rf.tryCommitEntry(&successCnt, logIndex, cmd)
 			}
 		}(i)
 	}
+}
+
+func (rf *Raft) tryCommitEntry(successCnt *int, logIndex int, cmd interface{}) {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	rf.debug(EVENT|LOG_REPLICATING, "Receive success replicate response, now total Cnt is %d", successCnt)
+
+	*successCnt += 1
+	// Leader will commit the entry if it finds the majority of followers have appended the entries.
+	if *successCnt > len(rf.peers)/2 {
+		rf.commitIndex = max(rf.commitIndex, logIndex)
+		if logIndex == rf.lastApplied+1 {
+			msg := ApplyMsg{
+				CommandValid: true,
+				Command:      cmd,
+				CommandIndex: logIndex,
+			}
+			rf.applyCh <- msg
+			rf.lastApplied = logIndex
+		}
+	}
+	rf.debugState()
 }
 
 func (rf *Raft) heartbeat() {
@@ -517,18 +512,11 @@ func (rf *Raft) heartbeat() {
 					Entries:      []Log{},
 					LeaderCommit: commitIdx,
 				}
+
 				reply := AppendEntriesReply{}
 				ok := rf.sendAppendEntries(i, &args, &reply)
 
-				rf.mu.Lock()
-				state := rf.state
-				currentTerm = rf.currentTerm
-				rf.mu.Unlock()
-				if state != LEADER {
-					return
-				}
-				if ok && !reply.Success && reply.Term > currentTerm {
-					rf.largerTerm(reply.Term)
+				if !rf.isLeader() || ok && !reply.Success && rf.receiveHigherTerm(reply.Term) {
 					return
 				}
 			}(i)
@@ -537,13 +525,32 @@ func (rf *Raft) heartbeat() {
 	}
 }
 
-func (rf *Raft) largerTerm(term int) {
+func (rf *Raft) receiveHigherTerm(term int) bool {
 	rf.mu.Lock()
-	rf.currentTerm = term
-	rf.state = FOLLOWER
-	rf.electionTimeout = time.Now().Add(getElectionTimeout())
-	rf.voteFor = -1
+	defer rf.mu.Unlock()
+	if rf.currentTerm >= term {
+		return false
+	} else {
+		rf.currentTerm = term
+		rf.state = FOLLOWER
+		rf.electionTimeout = time.Now().Add(getElectionTimeout())
+		rf.voteFor = -1
+		return true
+	}
+}
+
+func (rf *Raft) isLeader() bool {
+	rf.mu.Lock()
 	rf.mu.Unlock()
+
+	return rf.state == LEADER
+}
+
+func (rf *Raft) isCandidate() bool {
+	rf.mu.Lock()
+	rf.mu.Unlock()
+
+	return rf.state == CANDIDATE
 }
 
 // Make the service or tester wants to create a Raft server. the ports

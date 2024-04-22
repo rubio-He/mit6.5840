@@ -16,6 +16,9 @@ const (
 	STATE Topic = 0b100
 	EVENT Topic = 0b1000
 	WARN  Topic = 0b10000
+
+	VOTING          Topic = 0b10000000
+	LOG_REPLICATING Topic = 0b100000000
 )
 
 func (rf *Raft) debug(dLvl Topic, str string, a ...any) {
