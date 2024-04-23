@@ -28,7 +28,7 @@ import (
 	"6.5840/labrpc"
 )
 
-// as each Raft peer becomes aware that successive log entries are
+// ApplyMsg as each Raft peer becomes aware that successive log entries are
 // committed, the peer should send an ApplyMsg to the service (or
 // tester) on the same server, via the applyCh passed to Make(). set
 // CommandValid to true to indicate that the ApplyMsg contains a newly
@@ -98,8 +98,8 @@ func (rf *Raft) GetState() (int, bool) {
 	defer rf.mu.Unlock()
 
 	term := rf.currentTerm
-	isleader := rf.state == LEADER
-	return term, isleader
+	isLeader := rf.state == LEADER
+	return term, isLeader
 }
 
 // save Raft's persistent state to stable storage,
@@ -161,7 +161,7 @@ type RequestVoteArgs struct {
 // example RequestVote RPC reply structure.
 // field names must start with capital letters!
 type RequestVoteReply struct {
-	Term        int  // currentTerm, for can didate to update it self
+	Term        int  // currentTerm, for candidate to update it self
 	VoteGranted bool // true means candidate receive the vote
 }
 
@@ -189,7 +189,20 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		reply.VoteGranted = false
 		reply.Term = rf.currentTerm
 		return
-	} else if args.Term > rf.currentTerm || rf.voteFor == args.CandidateId || rf.voteFor == -1 {
+	}
+
+	if args.Term > rf.currentTerm {
+		rf.currentTerm = args.Term
+	}
+
+	if rf.lastLogIndex() > args.LastLogIndex || rf.lastLogIndex() == args.LastLogIndex && rf.lastLogTerm() > args.LastLogTerm {
+		rf.debug(VOTING, "Not grant vote because my log is more update to date last idx (%d), last term (%d) and request is %+v", rf.lastLogIndex(), rf.lastLogTerm(), args)
+		reply.VoteGranted = false
+		reply.Term = rf.currentTerm
+		return
+	}
+
+	if rf.voteFor == args.CandidateId || rf.voteFor == -1 {
 		reply.VoteGranted = true
 		reply.Term = args.Term
 
@@ -212,8 +225,10 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		return
 	}
 
-	if args.PrevLogIndex > len(rf.log) || (args.PrevLogIndex > 0 && rf.log[args.PrevLogIndex-1].Term != args.PrevLogTerm) {
-		rf.debug(WARN, "I can't append the entry because the previous log is different")
+	if args.PrevLogIndex < len(rf.log)+1 && args.PrevLogIndex > 0 && rf.log[args.PrevLogIndex-1].Term != args.PrevLogTerm {
+		rf.debug(WARN, "I can't append the entry because the previous log is different.)")
+		rf.debug(INFO, "Request: %+v", args)
+		rf.debugState()
 		reply.Term = rf.currentTerm
 		reply.Success = false
 		return
@@ -242,7 +257,6 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 					Index:   entry.Index,
 				}
 				rf.log = rf.log[:i]
-
 			}
 		} else {
 			rf.debug(WARN, "The Entry idx is illegal to append to the logs.")
@@ -259,6 +273,9 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 				CommandIndex: entry.Index,
 			}
 			rf.applyCh <- msg
+			rf.lastApplied = entry.Index
+			rf.debug(APPLY, "Applied Message of %+v", msg)
+
 		}
 	}
 
@@ -266,7 +283,6 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	reply.Term = rf.currentTerm
 	reply.Success = true
-	rf.debugState()
 }
 
 func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
@@ -332,7 +348,7 @@ func (rf *Raft) Start(cmd interface{}) (int, int, bool) {
 		return index, term, isLeader
 	}
 
-	go rf.replicateLogs(cmd)
+	go rf.replicateLogsToPeers(cmd)
 
 	return index, term, isLeader
 }
@@ -373,6 +389,8 @@ func (rf *Raft) ticker() {
 			rf.currentTerm++
 			rf.voteFor = rf.me
 			currentTerm := rf.currentTerm
+			lastLogIndex := rf.lastLogIndex()
+			lastLogTerm := rf.lastLogTerm()
 			rf.mu.Unlock()
 
 			votes := 1
@@ -382,8 +400,10 @@ func (rf *Raft) ticker() {
 				}
 				go func(i, currentTerm int) {
 					args := RequestVoteArgs{
-						Term:        currentTerm,
-						CandidateId: rf.me,
+						Term:         currentTerm,
+						CandidateId:  rf.me,
+						LastLogIndex: lastLogIndex,
+						LastLogTerm:  lastLogTerm,
 					}
 					reply := RequestVoteReply{}
 					ok := rf.sendRequestVote(i, &args, &reply)
@@ -420,68 +440,81 @@ func (rf *Raft) electionCounting(votes *int) {
 	}
 }
 
-func (rf *Raft) replicateLogs(cmd interface{}) {
+func (rf *Raft) replicateLogsToPeers(cmd interface{}) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
+
+	prevLogIndex := rf.lastLogIndex()
+	prevLogTerm := rf.lastLogTerm()
 	logIndex := len(rf.log) + 1
-	rf.log = append(rf.log, Log{cmd, rf.currentTerm, logIndex})
-	rf.nextIndex[rf.me] += 1
-	rf.matchIndex[rf.me] += 1
 	currentTerm := rf.currentTerm
-	successCnt := 1
+	newEntry := Log{cmd, currentTerm, logIndex}
+	rf.log = append(rf.log, newEntry)
 	commitIdx := rf.commitIndex
+
+	successCnt := 1
 	for i := range rf.peers {
 		if i == rf.me {
 			continue
 		}
-		go func(i int) {
-			rf.mu.Lock()
-			prevLogIndex := rf.nextIndex[i] - 1
-			prevLogTerm := logTermAt(&rf.log, prevLogIndex)
-			rf.mu.Unlock()
-			args := AppendEntriesArgs{
-				Term:         currentTerm,
-				LeaderId:     rf.me,
-				PrevLogIndex: prevLogIndex,
-				PrevLogTerm:  prevLogTerm,
-				Entries:      []Log{{cmd, currentTerm, logIndex}},
-				LeaderCommit: commitIdx,
-			}
-
-			reply := &AppendEntriesReply{}
-			ok := rf.sendAppendEntries(i, &args, reply)
-
-			if !rf.isLeader() || ok && !reply.Success && rf.receiveHigherTerm(reply.Term) {
-				return
-			}
-
-			if reply.Success {
-				rf.tryCommitEntry(&successCnt, logIndex, cmd)
-			}
-		}(i)
+		go rf.replicateLog(i, currentTerm, prevLogIndex, prevLogTerm, commitIdx, &successCnt, newEntry)
 	}
 }
 
-func (rf *Raft) tryCommitEntry(successCnt *int, logIndex int, cmd interface{}) {
+func (rf *Raft) replicateLog(i int, currentTerm int, prevLogIndex int, prevLogTerm int, commitIdx int, successCnt *int, entry Log) {
+	args := AppendEntriesArgs{
+		Term:         currentTerm,
+		LeaderId:     rf.me,
+		PrevLogIndex: prevLogIndex,
+		PrevLogTerm:  prevLogTerm,
+		Entries:      []Log{entry},
+		LeaderCommit: commitIdx,
+	}
+
+	reply := &AppendEntriesReply{}
+	ok := rf.sendAppendEntries(i, &args, reply)
+
+	if !rf.isLeader() || ok && !reply.Success && rf.receiveHigherTerm(reply.Term) {
+		return
+	}
+
+	if reply.Success {
+		rf.tryCommitEntry(successCnt, entry)
+		rf.updatePeerIndexes(i, entry.Index)
+		rf.debugState()
+	} else {
+		// TODO: resend the request until success
+	}
+}
+
+func (rf *Raft) updatePeerIndexes(server, logIndex int) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	rf.debug(EVENT|LOG_REPLICATING, "Receive success replicate response, now total Cnt is %d", successCnt)
 
+	rf.nextIndex[server] = max(rf.nextIndex[server], logIndex+1)
+	rf.matchIndex[server] = max(rf.matchIndex[server], logIndex)
+}
+
+func (rf *Raft) tryCommitEntry(successCnt *int, entry Log) {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
 	*successCnt += 1
+	rf.debug(EVENT|LOG_REPLICATING, "Receive success replicate response, now total Cnt is %d", *successCnt)
+
 	// Leader will commit the entry if it finds the majority of followers have appended the entries.
 	if *successCnt > len(rf.peers)/2 {
-		rf.commitIndex = max(rf.commitIndex, logIndex)
-		if logIndex == rf.lastApplied+1 {
+		rf.commitIndex = max(rf.commitIndex, entry.Index)
+		if entry.Index == rf.lastApplied+1 {
 			msg := ApplyMsg{
 				CommandValid: true,
-				Command:      cmd,
-				CommandIndex: logIndex,
+				Command:      entry.Command,
+				CommandIndex: entry.Index,
 			}
 			rf.applyCh <- msg
-			rf.lastApplied = logIndex
+			rf.lastApplied = entry.Index
+			rf.debug(APPLY, "Applied Message of %+v", msg)
 		}
 	}
-	rf.debugState()
 }
 
 func (rf *Raft) heartbeat() {
@@ -500,15 +533,11 @@ func (rf *Raft) heartbeat() {
 				continue
 			}
 			go func(i int) {
-				rf.mu.Lock()
-				prevLogIndex := rf.nextIndex[i] - 1
-				prevLogTerm := logTermAt(&rf.log, prevLogIndex)
-				rf.mu.Unlock()
 				args := AppendEntriesArgs{
 					Term:         currentTerm,
 					LeaderId:     rf.me,
-					PrevLogIndex: prevLogIndex,
-					PrevLogTerm:  prevLogTerm,
+					PrevLogIndex: rf.lastLogIndex(),
+					PrevLogTerm:  rf.lastLogTerm(),
 					Entries:      []Log{},
 					LeaderCommit: commitIdx,
 				}

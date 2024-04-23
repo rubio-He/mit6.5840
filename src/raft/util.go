@@ -6,7 +6,7 @@ import (
 )
 
 // Debugging
-const DebugLevel = STATE | EVENT | WARN
+const DebugLevel = APPLY | VOTING
 
 type Topic int
 
@@ -19,6 +19,7 @@ const (
 
 	VOTING          Topic = 0b10000000
 	LOG_REPLICATING Topic = 0b100000000
+	APPLY           Topic = 0b1000000000
 )
 
 func (rf *Raft) debug(dLvl Topic, str string, a ...any) {
@@ -35,6 +36,21 @@ func (rf *Raft) debugState() {
 		prefix := fmt.Sprintf("SEVER(%d): ", rf.me)
 		log.Printf(prefix + str)
 	}
+}
+
+func (rf *Raft) lastLogIndex() int {
+	if len(rf.log) == 0 {
+		return 0
+	}
+
+	return rf.log[len(rf.log)-1].Index
+}
+
+func (rf *Raft) lastLogTerm() int {
+	if len(rf.log) == 0 {
+		return 0
+	}
+	return rf.log[len(rf.log)-1].Term
 }
 
 func logTermAt(log *[]Log, idx int) int {
