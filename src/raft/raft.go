@@ -180,6 +180,11 @@ type AppendEntriesReply struct {
 	Success bool
 }
 
+type AppendEntriesResult struct {
+	server  int
+	Success bool
+}
+
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
@@ -442,7 +447,8 @@ func (rf *Raft) electionCounting(votes *int) {
 
 func (rf *Raft) replicateLogsToPeers(cmd interface{}) {
 	rf.mu.Lock()
-	defer rf.mu.Unlock()
+	resultChan := make(chan AppendEntriesResult)
+	quitChan := make(chan int)
 
 	prevLogIndex := rf.lastLogIndex()
 	prevLogTerm := rf.lastLogTerm()
@@ -450,38 +456,58 @@ func (rf *Raft) replicateLogsToPeers(cmd interface{}) {
 	currentTerm := rf.currentTerm
 	newEntry := Log{cmd, currentTerm, logIndex}
 	rf.log = append(rf.log, newEntry)
-	commitIdx := rf.commitIndex
 
 	successCnt := 1
 	for i := range rf.peers {
 		if i == rf.me {
 			continue
 		}
-		go rf.replicateLog(i, currentTerm, prevLogIndex, prevLogTerm, commitIdx, &successCnt, newEntry)
+		go rf.replicateLog(i, prevLogIndex, prevLogTerm, newEntry, resultChan, quitChan)
+	}
+	rf.mu.Unlock()
+
+	for {
+		select {
+		case result := <-resultChan:
+			rf.tryCommitEntry(&successCnt, newEntry)
+			rf.updatePeerIndexes(result.server, newEntry.Index)
+			rf.debugState()
+		case <-quitChan:
+			rf.debug(WARN, "Quit replicateLogsToPeer")
+			return
+		default:
+			time.Sleep(10 * time.Millisecond)
+		}
 	}
 }
 
-func (rf *Raft) replicateLog(i int, currentTerm int, prevLogIndex int, prevLogTerm int, commitIdx int, successCnt *int, entry Log) {
+func (rf *Raft) replicateLog(i int, prevLogIndex int, prevLogTerm int, entry Log, resultChan chan AppendEntriesResult, quitChan chan int) {
+	rf.mu.Lock()
 	args := AppendEntriesArgs{
-		Term:         currentTerm,
+		Term:         rf.currentTerm,
 		LeaderId:     rf.me,
 		PrevLogIndex: prevLogIndex,
 		PrevLogTerm:  prevLogTerm,
 		Entries:      []Log{entry},
-		LeaderCommit: commitIdx,
+		LeaderCommit: rf.commitIndex,
 	}
-
+	rf.mu.Unlock()
+	rf.debug(LOG_REPLICATING, "Send Replicate RPC")
 	reply := &AppendEntriesReply{}
 	ok := rf.sendAppendEntries(i, &args, reply)
 
 	if !rf.isLeader() || ok && !reply.Success && rf.receiveHigherTerm(reply.Term) {
+		quitChan <- 0
 		return
 	}
 
 	if reply.Success {
-		rf.tryCommitEntry(successCnt, entry)
-		rf.updatePeerIndexes(i, entry.Index)
-		rf.debugState()
+		rf.debug(LOG_REPLICATING|EVENT, "Receive success replicate log response from %d", i)
+		resultChan <- AppendEntriesResult{
+			server:  i,
+			Success: true,
+		}
+		return
 	} else {
 		// TODO: resend the request until success
 	}
@@ -533,6 +559,7 @@ func (rf *Raft) heartbeat() {
 				continue
 			}
 			go func(i int) {
+				rf.mu.Lock()
 				args := AppendEntriesArgs{
 					Term:         currentTerm,
 					LeaderId:     rf.me,
@@ -541,6 +568,7 @@ func (rf *Raft) heartbeat() {
 					Entries:      []Log{},
 					LeaderCommit: commitIdx,
 				}
+				rf.mu.Unlock()
 
 				reply := AppendEntriesReply{}
 				ok := rf.sendAppendEntries(i, &args, &reply)
