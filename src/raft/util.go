@@ -6,7 +6,7 @@ import (
 )
 
 // Debugging
-const DebugLevel = WARN | EVENT | LOG_REPLICATING
+const DebugLevel = VOTING
 
 type Topic int
 

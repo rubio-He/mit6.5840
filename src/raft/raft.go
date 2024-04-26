@@ -196,13 +196,20 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		return
 	}
 
-	if args.Term > rf.currentTerm {
-		rf.currentTerm = args.Term
-	}
-
 	if rf.lastLogIndex() > args.LastLogIndex || rf.lastLogIndex() == args.LastLogIndex && rf.lastLogTerm() > args.LastLogTerm {
 		rf.debug(VOTING, "Not grant vote because my log is more update to date last idx (%d), last term (%d) and request is %+v", rf.lastLogIndex(), rf.lastLogTerm(), args)
 		reply.VoteGranted = false
+		reply.Term = rf.currentTerm
+		return
+	}
+
+	if args.Term > rf.currentTerm {
+		rf.state = FOLLOWER
+		rf.currentTerm = args.Term
+		rf.voteFor = args.CandidateId
+		rf.electionTimeout = time.Now().Add(getElectionTimeout())
+
+		reply.VoteGranted = true
 		reply.Term = rf.currentTerm
 		return
 	}
@@ -216,6 +223,8 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		rf.voteFor = args.CandidateId
 		rf.electionTimeout = time.Now().Add(getElectionTimeout())
 		return
+	} else {
+		rf.debug(VOTING, "Ask for Candidate %d,Already voted for %d", args.CandidateId, rf.voteFor)
 	}
 }
 
@@ -240,10 +249,8 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	}
 
 	// Server finds new leader.
-	if rf.me != args.LeaderId {
-		rf.state = FOLLOWER
-		rf.currentTerm = args.Term
-	}
+	rf.state = FOLLOWER
+	rf.currentTerm = args.Term
 	rf.voteFor = -1
 
 	for _, entry := range args.Entries {
@@ -438,7 +445,7 @@ func (rf *Raft) electionCounting(votes *int) {
 	*votes++
 	if *votes > len(rf.peers)/2 {
 		if rf.state != LEADER {
-			rf.debug(EVENT|VOTING, "Become a leader.")
+			rf.debug(EVENT|VOTING, "Become a leader at term %d.", rf.currentTerm)
 			rf.state = LEADER
 			go rf.heartbeat()
 		}
