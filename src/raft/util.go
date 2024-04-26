@@ -3,10 +3,11 @@ package raft
 import (
 	"fmt"
 	"log"
+	"runtime"
 )
 
 // Debugging
-const DebugLevel = VOTING
+const DebugLevel = 0
 
 type Topic int
 
@@ -23,17 +24,24 @@ const (
 )
 
 func (rf *Raft) debug(dLvl Topic, str string, a ...any) {
+	pc, _, _, _ := runtime.Caller(1)
+	funcName := fmt.Sprintf("%s", runtime.FuncForPC(pc).Name())
 	if dLvl&DebugLevel != 0 {
 		str = str + "\n"
-		prefix := fmt.Sprintf("SEVER(%d): ", rf.me)
+		prefix := fmt.Sprintf("SEVER(%d): [%s]: ", rf.me, funcName)
 		log.Printf(prefix+str, a...)
 	}
 }
 
 func (rf *Raft) debugState() {
+	pc, _, _, _ := runtime.Caller(1)
+	funcName := fmt.Sprintf("%s", runtime.FuncForPC(pc).Name())
 	if STATE&DebugLevel != 0 {
-		str := fmt.Sprintf("Raft: %+v\n", *rf)
-		prefix := fmt.Sprintf("SEVER(%d): ", rf.me)
+		str := fmt.Sprintf("Raft Log: %+v ", (*rf).log)
+		str += fmt.Sprintf("Current Term: %d ", (*rf).currentTerm)
+		str += fmt.Sprintf("Commit Idx: %d ", (*rf).commitIndex)
+		str += fmt.Sprintf("Last Applied: %d\n", (*rf).lastApplied)
+		prefix := fmt.Sprintf("SEVER(%d): [%s]:", rf.me, funcName)
 		log.Printf(prefix + str)
 	}
 }
@@ -57,10 +65,10 @@ func logTermAt(log *[]Log, idx int) int {
 	if idx == 0 {
 		return INITIAL_TERM
 	}
-	if idx >= len(*log) {
+	if idx > len(*log) {
 		panic(fmt.Sprintf("Index out of boundary: %d, Slice length is %d", idx, len(*log)))
 	}
-	return (*log)[idx].Term
+	return (*log)[idx-1].Term
 }
 
 func lastEntry(log *[]Log) *Log {
@@ -69,6 +77,14 @@ func lastEntry(log *[]Log) *Log {
 
 func max(a, b int) int {
 	if a > b {
+		return a
+	} else {
+		return b
+	}
+}
+
+func min(a, b int) int {
+	if a < b {
 		return a
 	} else {
 		return b
