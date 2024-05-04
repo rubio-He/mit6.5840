@@ -49,10 +49,15 @@ type ApplyMsg struct {
 	SnapshotIndex int
 }
 
+type AppendEntriesMsg struct {
+	prevLogIndex int
+	success      bool
+}
+
 // Raft State in election.
 type State int
 
-const INITIAL_TERM = 1
+const InitialTerm = 1
 
 const (
 	CANDIDATE State = iota
@@ -88,7 +93,8 @@ type Raft struct {
 	state           State
 	electionTimeout time.Time
 
-	applyCh chan ApplyMsg
+	applyCh           chan ApplyMsg
+	appendEntriesChan []chan AppendEntriesMsg
 }
 
 // return currentTerm and whether this server
@@ -319,11 +325,31 @@ func (rf *Raft) electionCounting(votes *int) {
 	*votes++
 	if *votes > len(rf.peers)/2 {
 		if rf.state != LEADER {
-			rf.debug(EVENT|VOTING, "Become a leader. term is %d", rf.currentTerm)
-			rf.state = LEADER
-			go rf.heartbeat()
+			rf.convertToLeader()
 		}
 	}
+}
+
+func (rf *Raft) convertToLeader() {
+	rf.debug(EVENT|VOTING, "Become a leader. term is %d", rf.currentTerm)
+	rf.state = LEADER
+	// Initialize the next indexes to last log index + 1.
+	// Initialize the match indexes to 0.
+	for i := range rf.peers {
+		rf.nextIndex[i] = rf.lastLogIndex() + 1
+		rf.matchIndex[i] = 0
+	}
+
+	for i := range rf.peers {
+		if i == rf.me {
+			continue
+		}
+
+		timer := time.NewTimer(10 * time.Millisecond)
+
+	}
+
+	go rf.heartbeat()
 }
 
 func (rf *Raft) replicateLogsToPeers(cmd interface{}) {
@@ -462,6 +488,18 @@ func (rf *Raft) tryCommitEntry(successCnt *int, entry Log) {
 			rf.applyCh <- msg
 			rf.lastApplied = entry.Index
 			rf.debug(APPLY, "Applied Message of %+v", msg)
+		}
+	}
+}
+
+func (rf *Raft) handleAppendEntries(i int, timer *time.Timer) {
+	for {
+		select {
+		case <-timer.C:
+		// Send heartbeat msg
+		case msg <- rf.appendEntriesChan[i]:
+
+			timer.Reset(10 * time.Second)
 		}
 	}
 }
@@ -612,7 +650,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.me = me
 	rf.log = make([]Log, 0)
 
-	rf.currentTerm = INITIAL_TERM
+	rf.currentTerm = InitialTerm
 	rf.voteFor = -1
 	rf.commitIndex = 0
 	rf.lastApplied = 0
@@ -626,6 +664,10 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.electionTimeout = time.Now().Add(getElectionTimeout())
 
 	rf.applyCh = applyCh
+	rf.appendEntriesChan = make([]chan AppendEntriesMsg, len(peers))
+	for i := range rf.appendEntriesChan {
+		rf.appendEntriesChan[i] = make(chan AppendEntriesMsg)
+	}
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())

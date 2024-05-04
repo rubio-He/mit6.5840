@@ -7,7 +7,7 @@ import (
 )
 
 // Debugging
-const DebugLevel = 0
+const DebugLevel = STATE
 
 type Topic int
 
@@ -39,6 +39,7 @@ func (rf *Raft) debugState() {
 	if STATE&DebugLevel != 0 {
 		str := fmt.Sprintf("Raft Log: %+v ", (*rf).log)
 		str += fmt.Sprintf("Current Term: %d ", (*rf).currentTerm)
+		str += fmt.Sprintf("Peer next Index: %+v ", (*rf).nextIndex)
 		str += fmt.Sprintf("Commit Idx: %d ", (*rf).commitIndex)
 		str += fmt.Sprintf("Last Applied: %d\n", (*rf).lastApplied)
 		prefix := fmt.Sprintf("SEVER(%d): [%s]:", rf.me, funcName)
@@ -63,7 +64,7 @@ func (rf *Raft) lastLogTerm() int {
 
 func logTermAt(log *[]Log, idx int) int {
 	if idx == 0 {
-		return INITIAL_TERM
+		return InitialTerm
 	}
 	if idx > len(*log) {
 		panic(fmt.Sprintf("Index out of boundary: %d, Slice length is %d", idx, len(*log)))
