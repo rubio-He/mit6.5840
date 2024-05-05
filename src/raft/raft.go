@@ -267,10 +267,7 @@ func (rf *Raft) ticker() {
 			if ok := rf.sendRequestVote(rf.me, &RequestVoteArgs{
 				CandidateId: rf.me,
 			}, &RequestVoteReply{}); !ok {
-				rf.mu.Lock()
-				electionTimeout := getElectionTimeout()
-				rf.electionTimeout = time.Now().Add(electionTimeout)
-				rf.mu.Unlock()
+				electionTimeout := rf.resetElectionTimeout()
 				time.Sleep(electionTimeout)
 				continue
 			}
@@ -309,13 +306,19 @@ func (rf *Raft) ticker() {
 					}
 				}(idx, currentTerm)
 			}
-			rf.mu.Lock()
-			electionTimeout := getElectionTimeout()
-			rf.electionTimeout = time.Now().Add(electionTimeout)
-			rf.mu.Unlock()
+			electionTimeout := rf.resetElectionTimeout()
 			time.Sleep(electionTimeout)
 		}
 	}
+}
+
+func (rf *Raft) resetElectionTimeout() time.Duration {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	electionTimeout := getElectionTimeout()
+	rf.electionTimeout = time.Now().Add(electionTimeout)
+	return electionTimeout
 }
 
 func (rf *Raft) electionCounting(votes *int) {
@@ -340,14 +343,14 @@ func (rf *Raft) convertToLeader() {
 		rf.matchIndex[i] = 0
 	}
 
-	for i := range rf.peers {
-		if i == rf.me {
-			continue
-		}
-
-		timer := time.NewTimer(10 * time.Millisecond)
-
-	}
+	//for i := range rf.peers {
+	//	if i == rf.me {
+	//		continue
+	//	}
+	//
+	//	timer := time.NewTimer(10 * time.Millisecond)
+	//	// TODO
+	//}
 
 	go rf.heartbeat()
 }
@@ -357,8 +360,6 @@ func (rf *Raft) replicateLogsToPeers(cmd interface{}) {
 	resultChan := make(chan AppendEntriesResult)
 	quitChan := make(chan int)
 
-	lastLogIndex := rf.lastLogIndex()
-	lastLogTerm := rf.lastLogTerm()
 	logIndex := len(rf.log) + 1
 	currentTerm := rf.currentTerm
 	newEntry := Log{cmd, currentTerm, logIndex}
@@ -369,7 +370,10 @@ func (rf *Raft) replicateLogsToPeers(cmd interface{}) {
 		if i == rf.me {
 			continue
 		}
-		go rf.replicateLog(i, lastLogIndex, lastLogTerm, newEntry.Index, newEntry, resultChan, quitChan)
+
+		lastLogIndex := rf.nextIndex[i] - 1
+		lastLogTerm := logTermAt(&rf.log, lastLogIndex)
+		go rf.replicateLog(i, lastLogIndex, lastLogTerm, newEntry, resultChan, quitChan)
 	}
 	rf.mu.Unlock()
 
@@ -382,18 +386,10 @@ func (rf *Raft) replicateLogsToPeers(cmd interface{}) {
 					rf.updatePeerIndexes(result.server, newEntry.Index)
 					rf.debugState()
 				} else {
-					rf.mu.Lock()
-					prevLogIndex := result.PrevLogIndex + 1
-					index := prevLogIndex + 1
-					prevLogTerm := logTermAt(&rf.log, prevLogIndex)
-					entry := rf.log[index-1]
-
-					rf.debug(LOG_REPLICATING, "Resend replicate log request to %d, prevLogIndex %d", result.server, prevLogIndex)
-					go rf.replicateLog(result.server, prevLogIndex, prevLogTerm, newEntry.Index, entry, resultChan, quitChan)
-					rf.mu.Unlock()
+					rf.handleAppendEntriesSuccess(result, resultChan, quitChan)
 				}
 			} else {
-				rf.resendAppendEntriesResult(result, resultChan, quitChan)
+				rf.handleAppendEntriesFailure(result, resultChan, quitChan)
 			}
 		case <-quitChan:
 			rf.debug(WARN, "Quit replicateLogsToPeer")
@@ -404,20 +400,42 @@ func (rf *Raft) replicateLogsToPeers(cmd interface{}) {
 	}
 }
 
-func (rf *Raft) resendAppendEntriesResult(result AppendEntriesResult, resultChan chan AppendEntriesResult, quitChan chan int) {
+func (rf *Raft) handleAppendEntriesSuccess(result AppendEntriesResult, resultChan chan AppendEntriesResult, quitChan chan int) {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	server := result.server
+
+	prevLogIndex := result.PrevLogIndex + 1
+	prevLogTerm := logTermAt(&rf.log, prevLogIndex)
+	entry := rf.log[prevLogIndex]
+
+	// Increase the followers' next index.
+	rf.nextIndex[server] = prevLogIndex + 1
+	// Increase the followers' match index.
+	rf.matchIndex[server] = result.PrevLogIndex
+
+	rf.debug(LOG_REPLICATING, "Resend replicate log request to %d, prevLogIndex %d", result.server, prevLogIndex)
+	go rf.replicateLog(server, prevLogIndex, prevLogTerm, entry, resultChan, quitChan)
+}
+
+func (rf *Raft) handleAppendEntriesFailure(result AppendEntriesResult, resultChan chan AppendEntriesResult, quitChan chan int) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
+	server := result.server
+
 	prevLogIndex := result.PrevLogIndex - 1
-	logIndex := prevLogIndex + 1
 	prevLogTerm := logTermAt(&rf.log, prevLogIndex)
-	entry := rf.log[logIndex-1]
+	entry := rf.log[prevLogIndex]
+
+	// Decrease the followers' next index.
+	rf.nextIndex[server] = prevLogIndex + 1
 
 	rf.debug(LOG_REPLICATING, "Resend replicate log request, prevLogIndex %d", prevLogIndex)
-	go rf.replicateLog(result.server, prevLogIndex, prevLogTerm, rf.lastLogIndex(), entry, resultChan, quitChan)
+	go rf.replicateLog(server, prevLogIndex, prevLogTerm, entry, resultChan, quitChan)
 }
 
-func (rf *Raft) replicateLog(i int, prevLogIndex int, prevLogTerm int, lastLogIndex int, entry Log, resultChan chan AppendEntriesResult, quitChan chan int) {
+func (rf *Raft) replicateLog(i int, prevLogIndex int, prevLogTerm int, entry Log, resultChan chan AppendEntriesResult, quitChan chan int) {
 	rf.mu.Lock()
 	args := AppendEntriesArgs{
 		Term:         rf.currentTerm,
@@ -427,6 +445,7 @@ func (rf *Raft) replicateLog(i int, prevLogIndex int, prevLogTerm int, lastLogIn
 		Entries:      []Log{entry},
 		LeaderCommit: rf.commitIndex,
 	}
+	leaderLastLogIndex := rf.lastLogIndex()
 	rf.mu.Unlock()
 	reply := &AppendEntriesReply{}
 	ok := rf.sendAppendEntries(i, &args, reply)
@@ -445,7 +464,7 @@ func (rf *Raft) replicateLog(i int, prevLogIndex int, prevLogTerm int, lastLogIn
 		resultChan <- AppendEntriesResult{
 			server:       i,
 			Success:      true,
-			LastEntry:    entry.Index == lastLogIndex,
+			LastEntry:    entry.Index == leaderLastLogIndex,
 			PrevLogIndex: prevLogIndex,
 			PrevLogTerm:  prevLogTerm,
 		}
@@ -455,7 +474,7 @@ func (rf *Raft) replicateLog(i int, prevLogIndex int, prevLogTerm int, lastLogIn
 		resultChan <- AppendEntriesResult{
 			server:       i,
 			Success:      false,
-			LastEntry:    entry.Index == lastLogIndex,
+			LastEntry:    entry.Index == leaderLastLogIndex,
 			PrevLogIndex: prevLogIndex,
 			PrevLogTerm:  prevLogTerm,
 		}
@@ -492,17 +511,16 @@ func (rf *Raft) tryCommitEntry(successCnt *int, entry Log) {
 	}
 }
 
-func (rf *Raft) handleAppendEntries(i int, timer *time.Timer) {
-	for {
-		select {
-		case <-timer.C:
-		// Send heartbeat msg
-		case msg <- rf.appendEntriesChan[i]:
-
-			timer.Reset(10 * time.Second)
-		}
-	}
-}
+//func (rf *Raft) handleAppendEntries(i int, timer *time.Timer) {
+//	for {
+//		select {
+//		case <-timer.C:
+//		// Send heartbeat msg
+//		case msg <- rf.appendEntriesChan[i]:
+//			timer.Reset(10 * time.Second)
+//		}
+//	}
+//}
 
 func (rf *Raft) heartbeat() {
 	resultChan := make(chan AppendEntriesResult)
@@ -580,18 +598,10 @@ func (rf *Raft) handleFailureHeartBeat(resultChan chan AppendEntriesResult, quit
 				if result.LastEntry {
 					rf.debugState()
 				} else {
-					rf.mu.Lock()
-					prevLogIndex := result.PrevLogIndex + 1
-					index := prevLogIndex + 1
-					prevLogTerm := logTermAt(&rf.log, prevLogIndex)
-					entry := rf.log[index-1]
-
-					rf.debug(WARN, "Resend replicate log request, prevLogIndex %d", prevLogIndex)
-					go rf.replicateLog(result.server, prevLogIndex, prevLogTerm, rf.lastLogIndex(), entry, resultChan, quitChan)
-					rf.mu.Unlock()
+					rf.handleAppendEntriesSuccess(result, resultChan, quitChan)
 				}
 			} else {
-				rf.resendAppendEntriesResult(result, resultChan, quitChan)
+				rf.handleAppendEntriesFailure(result, resultChan, quitChan)
 			}
 		case <-quitChan:
 			rf.debug(WARN, "Quit replicateLogsToPeer")
@@ -616,20 +626,6 @@ func (rf *Raft) receiveHigherTerm(term int) bool {
 		rf.voteFor = -1
 		return true
 	}
-}
-
-func (rf *Raft) isLeader() bool {
-	rf.mu.Lock()
-	rf.mu.Unlock()
-
-	return rf.state == LEADER
-}
-
-func (rf *Raft) isCandidate() bool {
-	rf.mu.Lock()
-	rf.mu.Unlock()
-
-	return rf.state == CANDIDATE
 }
 
 // Make the service or tester wants to create a Raft server. the ports

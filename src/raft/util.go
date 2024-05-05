@@ -91,3 +91,17 @@ func min(a, b int) int {
 		return b
 	}
 }
+
+func (rf *Raft) isLeader() bool {
+	rf.mu.Lock()
+	rf.mu.Unlock()
+
+	return rf.state == LEADER
+}
+
+func (rf *Raft) isCandidate() bool {
+	rf.mu.Lock()
+	rf.mu.Unlock()
+
+	return rf.state == CANDIDATE
+}
