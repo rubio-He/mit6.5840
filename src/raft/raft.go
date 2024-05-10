@@ -93,8 +93,10 @@ type Raft struct {
 	state           State
 	electionTimeout time.Time
 
-	applyCh           chan ApplyMsg
-	appendEntriesChan []chan AppendEntriesMsg
+	applyCh               chan ApplyMsg
+	appendEntriesResultCh chan AppendEntriesResult
+	leaderQuitCh          chan int
+	appendEntriesChan     []chan AppendEntriesMsg
 }
 
 // return currentTerm and whether this server
@@ -343,6 +345,8 @@ func (rf *Raft) convertToLeader() {
 		rf.matchIndex[i] = 0
 	}
 
+	rf.leaderQuitCh = make(chan int)
+
 	//for i := range rf.peers {
 	//	if i == rf.me {
 	//		continue
@@ -358,11 +362,8 @@ func (rf *Raft) convertToLeader() {
 func (rf *Raft) replicateLogsToPeers(cmd interface{}) {
 	rf.mu.Lock()
 	resultChan := make(chan AppendEntriesResult)
-	quitChan := make(chan int)
 
-	logIndex := len(rf.log) + 1
-	currentTerm := rf.currentTerm
-	newEntry := Log{cmd, currentTerm, logIndex}
+	newEntry := Log{cmd, rf.currentTerm, len(rf.log) + 1}
 	rf.log = append(rf.log, newEntry)
 
 	successCnt := 1
@@ -373,7 +374,7 @@ func (rf *Raft) replicateLogsToPeers(cmd interface{}) {
 
 		lastLogIndex := rf.nextIndex[i] - 1
 		lastLogTerm := logTermAt(&rf.log, lastLogIndex)
-		go rf.replicateLog(i, lastLogIndex, lastLogTerm, newEntry, resultChan, quitChan)
+		go rf.replicateLog(i, lastLogIndex, lastLogTerm, newEntry, resultChan)
 	}
 	rf.mu.Unlock()
 
@@ -386,12 +387,12 @@ func (rf *Raft) replicateLogsToPeers(cmd interface{}) {
 					rf.updatePeerIndexes(result.server, newEntry.Index)
 					rf.debugState()
 				} else {
-					rf.handleAppendEntriesSuccess(result, resultChan, quitChan)
+					rf.handleAppendEntriesSuccess(result, resultChan)
 				}
 			} else {
-				rf.handleAppendEntriesFailure(result, resultChan, quitChan)
+				rf.handleAppendEntriesFailure(result, resultChan)
 			}
-		case <-quitChan:
+		case <-rf.leaderQuitCh:
 			rf.debug(WARN, "Quit replicateLogsToPeer")
 			return
 		default:
@@ -400,7 +401,7 @@ func (rf *Raft) replicateLogsToPeers(cmd interface{}) {
 	}
 }
 
-func (rf *Raft) handleAppendEntriesSuccess(result AppendEntriesResult, resultChan chan AppendEntriesResult, quitChan chan int) {
+func (rf *Raft) handleAppendEntriesSuccess(result AppendEntriesResult, resultChan chan AppendEntriesResult) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	server := result.server
@@ -415,10 +416,10 @@ func (rf *Raft) handleAppendEntriesSuccess(result AppendEntriesResult, resultCha
 	rf.matchIndex[server] = result.PrevLogIndex
 
 	rf.debug(LOG_REPLICATING, "Resend replicate log request to %d, prevLogIndex %d", result.server, prevLogIndex)
-	go rf.replicateLog(server, prevLogIndex, prevLogTerm, entry, resultChan, quitChan)
+	go rf.replicateLog(server, prevLogIndex, prevLogTerm, entry, resultChan)
 }
 
-func (rf *Raft) handleAppendEntriesFailure(result AppendEntriesResult, resultChan chan AppendEntriesResult, quitChan chan int) {
+func (rf *Raft) handleAppendEntriesFailure(result AppendEntriesResult, resultChan chan AppendEntriesResult) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
@@ -432,10 +433,10 @@ func (rf *Raft) handleAppendEntriesFailure(result AppendEntriesResult, resultCha
 	rf.nextIndex[server] = prevLogIndex + 1
 
 	rf.debug(LOG_REPLICATING, "Resend replicate log request, prevLogIndex %d", prevLogIndex)
-	go rf.replicateLog(server, prevLogIndex, prevLogTerm, entry, resultChan, quitChan)
+	go rf.replicateLog(server, prevLogIndex, prevLogTerm, entry, resultChan)
 }
 
-func (rf *Raft) replicateLog(i int, prevLogIndex int, prevLogTerm int, entry Log, resultChan chan AppendEntriesResult, quitChan chan int) {
+func (rf *Raft) replicateLog(i int, prevLogIndex int, prevLogTerm int, entry Log, resultChan chan AppendEntriesResult) {
 	rf.mu.Lock()
 	args := AppendEntriesArgs{
 		Term:         rf.currentTerm,
@@ -455,7 +456,7 @@ func (rf *Raft) replicateLog(i int, prevLogIndex int, prevLogTerm int, entry Log
 	}
 
 	if !rf.isLeader() || !reply.Success && rf.receiveHigherTerm(reply.Term) {
-		quitChan <- 0
+		rf.leaderQuitCh <- 0
 		return
 	}
 
@@ -524,8 +525,7 @@ func (rf *Raft) tryCommitEntry(successCnt *int, entry Log) {
 
 func (rf *Raft) heartbeat() {
 	resultChan := make(chan AppendEntriesResult)
-	quitChan := make(chan int)
-	go rf.handleFailureHeartBeat(resultChan, quitChan)
+	go rf.handleFailureHeartBeat(resultChan)
 
 	for !rf.killed() {
 		rf.mu.Lock()
@@ -534,7 +534,7 @@ func (rf *Raft) heartbeat() {
 		commitIdx := rf.commitIndex
 		rf.mu.Unlock()
 		if state != LEADER {
-			quitChan <- 0
+			rf.leaderQuitCh <- 0
 			break
 		}
 
@@ -542,7 +542,7 @@ func (rf *Raft) heartbeat() {
 			if i == rf.me {
 				continue
 			}
-			go func(i int, resultChan chan AppendEntriesResult, quitChan chan int) {
+			go func(i int, resultChan chan AppendEntriesResult) {
 				rf.mu.Lock()
 				lastLogIndex := rf.lastLogIndex()
 				lastLogTerm := rf.lastLogTerm()
@@ -562,7 +562,7 @@ func (rf *Raft) heartbeat() {
 					return
 				}
 				if !rf.isLeader() || ok && !reply.Success && rf.receiveHigherTerm(reply.Term) {
-					quitChan <- 0
+					rf.leaderQuitCh <- 0
 					return
 				}
 
@@ -584,13 +584,13 @@ func (rf *Raft) heartbeat() {
 						LastEntry:    true,
 					}
 				}
-			}(i, resultChan, quitChan)
+			}(i, resultChan)
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
 }
 
-func (rf *Raft) handleFailureHeartBeat(resultChan chan AppendEntriesResult, quitChan chan int) {
+func (rf *Raft) handleFailureHeartBeat(resultChan chan AppendEntriesResult) {
 	for {
 		select {
 		case result := <-resultChan:
@@ -598,12 +598,12 @@ func (rf *Raft) handleFailureHeartBeat(resultChan chan AppendEntriesResult, quit
 				if result.LastEntry {
 					rf.debugState()
 				} else {
-					rf.handleAppendEntriesSuccess(result, resultChan, quitChan)
+					rf.handleAppendEntriesSuccess(result, resultChan)
 				}
 			} else {
-				rf.handleAppendEntriesFailure(result, resultChan, quitChan)
+				rf.handleAppendEntriesFailure(result, resultChan)
 			}
-		case <-quitChan:
+		case <-rf.leaderQuitCh:
 			rf.debug(WARN, "Quit replicateLogsToPeer")
 			return
 		default:
@@ -624,6 +624,7 @@ func (rf *Raft) receiveHigherTerm(term int) bool {
 		rf.state = FOLLOWER
 		rf.electionTimeout = time.Now().Add(getElectionTimeout())
 		rf.voteFor = -1
+		rf.leaderQuitCh <- 0
 		return true
 	}
 }
@@ -660,6 +661,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.electionTimeout = time.Now().Add(getElectionTimeout())
 
 	rf.applyCh = applyCh
+	rf.appendEntriesResultCh = make(chan AppendEntriesResult)
+	rf.leaderQuitCh = make(chan int)
 	rf.appendEntriesChan = make([]chan AppendEntriesMsg, len(peers))
 	for i := range rf.appendEntriesChan {
 		rf.appendEntriesChan[i] = make(chan AppendEntriesMsg)
