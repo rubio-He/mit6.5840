@@ -7,7 +7,7 @@ import (
 )
 
 // Debugging
-const DebugLevel = STATE
+const DebugLevel = VOTING
 
 type Topic int
 
@@ -94,14 +94,14 @@ func min(a, b int) int {
 
 func (rf *Raft) isLeader() bool {
 	rf.mu.Lock()
-	rf.mu.Unlock()
+	defer rf.mu.Unlock()
 
 	return rf.state == LEADER
 }
 
 func (rf *Raft) isCandidate() bool {
 	rf.mu.Lock()
-	rf.mu.Unlock()
+	defer rf.mu.Unlock()
 
 	return rf.state == CANDIDATE
 }

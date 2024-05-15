@@ -54,6 +54,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	}
 
 	if args.Term > rf.currentTerm {
+		rf.debug(VOTING, "See a higher term from client %d, term is %d, my term is %d. Vote Grant!", args.CandidateId, args.Term, rf.currentTerm)
 		rf.state = FOLLOWER
 		rf.currentTerm = args.Term
 		rf.voteFor = args.CandidateId
