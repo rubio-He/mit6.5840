@@ -49,11 +49,6 @@ type ApplyMsg struct {
 	SnapshotIndex int
 }
 
-type AppendEntriesMsg struct {
-	prevLogIndex int
-	success      bool
-}
-
 // Raft State in election.
 type State int
 
@@ -95,9 +90,9 @@ type Raft struct {
 
 	applyCh chan ApplyMsg
 
-	appendEntriesResultCh chan AppendEntriesResult
+	appendEntriesResultCh []chan AppendEntriesResult
 	leaderQuitCh          chan int
-	appendEntriesChan     []chan AppendEntriesMsg
+	newEntriesCh          chan Log
 }
 
 // return currentTerm and whether this server
@@ -159,7 +154,6 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 }
 
 type AppendEntriesResult struct {
-	server       int
 	Success      bool
 	LastEntry    bool
 	PrevLogIndex int
@@ -228,9 +222,31 @@ func (rf *Raft) Start(cmd interface{}) (int, int, bool) {
 		return index, term, isLeader
 	}
 
-	go rf.replicateLogsToPeers(cmd)
+	// go rf.replicateLogsToPeers(cmd)
 
 	return index, term, isLeader
+}
+
+func (rf *Raft) tryCommitEntry(successCnt *int, entry Log) {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	*successCnt += 1
+	rf.debug(EVENT|LOG_REPLICATING, "Receive success replicate response, now total Cnt is %d", *successCnt)
+
+	// Leader will commit the entry if it finds the majority of followers have appended the entries.
+	if *successCnt > len(rf.peers)/2 {
+		rf.commitIndex = max(rf.commitIndex, entry.Index)
+		if entry.Index == rf.lastApplied+1 {
+			msg := ApplyMsg{
+				CommandValid: true,
+				Command:      entry.Command,
+				CommandIndex: entry.Index,
+			}
+			rf.applyCh <- msg
+			rf.lastApplied = entry.Index
+			rf.debug(APPLY, "Applied Message of %+v", msg)
+		}
+	}
 }
 
 // the tester doesn't halt goroutines created by Raft after each test,
@@ -334,7 +350,7 @@ func (rf *Raft) convertToLeader() {
 		rf.nextIndex[i] = rf.lastLogIndex() + 1
 		rf.matchIndex[i] = 0
 	}
-
+	// Clean the leader quit channal.
 	rf.leaderQuitCh = make(chan int)
 
 	for i := range rf.peers {
@@ -350,8 +366,17 @@ func (rf *Raft) heartbeat(i int, timer *time.Ticker) {
 	for !rf.killed() {
 		select {
 		case <-timer.C:
-			go rf.sendHeartbeat(i, rf.appendEntriesResultCh)
-		case _ <- rf.appendEntriesChan[i]:
+			go rf.sendHeartbeat(i)
+		case result := <-rf.appendEntriesResultCh[i]:
+			if result.Success {
+				if result.LastEntry {
+					rf.debugState()
+				} else {
+					rf.handleAppendEntriesSuccess(i, result)
+				}
+			} else {
+				rf.handleAppendEntriesFailure(i, result)
+			}
 			timer.Reset(10 * time.Second)
 		case <-rf.leaderQuitCh:
 			return
@@ -359,43 +384,39 @@ func (rf *Raft) heartbeat(i int, timer *time.Ticker) {
 	}
 }
 
-func (rf *Raft) handleAppendEntriesSuccess(result AppendEntriesResult, resultChan chan AppendEntriesResult) {
+func (rf *Raft) handleAppendEntriesSuccess(i int, result AppendEntriesResult) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	server := result.server
 
 	prevLogIndex := result.PrevLogIndex + 1
 	prevLogTerm := logTermAt(&rf.log, prevLogIndex)
 	entry := rf.log[prevLogIndex]
 
 	// Increase the followers' next index.
-	rf.nextIndex[server] = prevLogIndex + 1
+	rf.nextIndex[i] = prevLogIndex + 1
 	// Increase the followers' match index.
-	rf.matchIndex[server] = result.PrevLogIndex
+	rf.matchIndex[i] = result.PrevLogIndex
 
-	rf.debug(LOG_REPLICATING, "Resend replicate log request to %d, prevLogIndex %d", result.server, prevLogIndex)
-	go rf.replicateLog(server, prevLogIndex, prevLogTerm, entry, resultChan)
+	rf.debug(LOG_REPLICATING, "Resend replicate log request to %d, prevLogIndex %d", i, prevLogIndex)
+	go rf.replicateLog(i, prevLogIndex, prevLogTerm, entry)
 }
 
-func (rf *Raft) handleAppendEntriesFailure(result AppendEntriesResult, resultChan chan AppendEntriesResult) {
+func (rf *Raft) handleAppendEntriesFailure(i int, result AppendEntriesResult) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-
-	server := result.server
 
 	prevLogIndex := result.PrevLogIndex - 1
 	prevLogTerm := logTermAt(&rf.log, prevLogIndex)
 	entry := rf.log[prevLogIndex]
 
 	// Decrease the followers' next index.
-	rf.nextIndex[server] = prevLogIndex + 1
+	rf.nextIndex[i] = prevLogIndex + 1
 
 	rf.debug(LOG_REPLICATING, "Resend replicate log request, prevLogIndex %d", prevLogIndex)
-	go rf.replicateLog(server, prevLogIndex, prevLogTerm, entry, resultChan)
+	go rf.replicateLog(i, prevLogIndex, prevLogTerm, entry)
 }
 
-func (rf *Raft) replicateLog(i int, prevLogIndex int, prevLogTerm int, entry Log, resultChan chan AppendEntriesResult) {
-	rf.mu.Lock()
+func (rf *Raft) replicateLog(i int, prevLogIndex int, prevLogTerm int, entry Log) {
 	args := AppendEntriesArgs{
 		Term:         rf.currentTerm,
 		LeaderId:     rf.me,
@@ -420,8 +441,7 @@ func (rf *Raft) replicateLog(i int, prevLogIndex int, prevLogTerm int, entry Log
 
 	if reply.Success {
 		rf.debug(LOG_REPLICATING|EVENT, "Receive success replicate log response from %d", i)
-		resultChan <- AppendEntriesResult{
-			server:       i,
+		rf.appendEntriesResultCh[i] <- AppendEntriesResult{
 			Success:      true,
 			LastEntry:    entry.Index == leaderLastLogIndex,
 			PrevLogIndex: prevLogIndex,
@@ -430,8 +450,7 @@ func (rf *Raft) replicateLog(i int, prevLogIndex int, prevLogTerm int, entry Log
 		return
 	} else {
 		rf.debug(LOG_REPLICATING|EVENT, "Receive fail replicate log response from %d", i)
-		resultChan <- AppendEntriesResult{
-			server:       i,
+		rf.appendEntriesResultCh[i] <- AppendEntriesResult{
 			Success:      false,
 			LastEntry:    entry.Index == leaderLastLogIndex,
 			PrevLogIndex: prevLogIndex,
@@ -440,37 +459,7 @@ func (rf *Raft) replicateLog(i int, prevLogIndex int, prevLogTerm int, entry Log
 	}
 }
 
-func (rf *Raft) updatePeerIndexes(server, logIndex int) {
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
-
-	rf.nextIndex[server] = max(rf.nextIndex[server], logIndex+1)
-	rf.matchIndex[server] = max(rf.matchIndex[server], logIndex)
-}
-
-func (rf *Raft) tryCommitEntry(successCnt *int, entry Log) {
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
-	*successCnt += 1
-	rf.debug(EVENT|LOG_REPLICATING, "Receive success replicate response, now total Cnt is %d", *successCnt)
-
-	// Leader will commit the entry if it finds the majority of followers have appended the entries.
-	if *successCnt > len(rf.peers)/2 {
-		rf.commitIndex = max(rf.commitIndex, entry.Index)
-		if entry.Index == rf.lastApplied+1 {
-			msg := ApplyMsg{
-				CommandValid: true,
-				Command:      entry.Command,
-				CommandIndex: entry.Index,
-			}
-			rf.applyCh <- msg
-			rf.lastApplied = entry.Index
-			rf.debug(APPLY, "Applied Message of %+v", msg)
-		}
-	}
-}
-
-func (rf *Raft) sendHeartbeat(i int, resultChan chan AppendEntriesResult) {
+func (rf *Raft) sendHeartbeat(i int) {
 	rf.mu.Lock()
 	lastLogIndex := rf.lastLogIndex()
 	lastLogTerm := rf.lastLogTerm()
@@ -496,89 +485,20 @@ func (rf *Raft) sendHeartbeat(i int, resultChan chan AppendEntriesResult) {
 
 	if !reply.Success {
 		rf.debug(WARN, "Fail heartbeat for server %d", i)
-		resultChan <- AppendEntriesResult{
-			server:       i,
+		rf.appendEntriesResultCh[i] <- AppendEntriesResult{
 			Success:      false,
 			PrevLogIndex: lastLogIndex,
 			PrevLogTerm:  lastLogTerm,
 			LastEntry:    true,
 		}
 	} else {
-		resultChan <- AppendEntriesResult{
-			server:       i,
+		rf.appendEntriesResultCh[i] <- AppendEntriesResult{
 			Success:      true,
 			PrevLogIndex: lastLogIndex,
 			PrevLogTerm:  lastLogTerm,
 			LastEntry:    true,
 		}
 	}
-}
-
-func (rf *Raft) replicateLogsToPeers(cmd interface{}) {
-	rf.mu.Lock()
-	resultChan := make(chan AppendEntriesResult)
-
-	newEntry := Log{cmd, rf.currentTerm, len(rf.log) + 1}
-	rf.log = append(rf.log, newEntry)
-
-	successCnt := 1
-	for i := range rf.peers {
-		if i == rf.me {
-			continue
-		}
-
-		lastLogIndex := rf.nextIndex[i] - 1
-		lastLogTerm := logTermAt(&rf.log, lastLogIndex)
-		go rf.replicateLog(i, lastLogIndex, lastLogTerm, newEntry, resultChan)
-	}
-	rf.mu.Unlock()
-
-	for {
-		select {
-		case result := <-resultChan:
-			if result.Success {
-				if result.LastEntry {
-					rf.tryCommitEntry(&successCnt, newEntry)
-					rf.updatePeerIndexes(result.server, newEntry.Index)
-					rf.debugState()
-				} else {
-					rf.handleAppendEntriesSuccess(result, resultChan)
-				}
-			} else {
-				rf.handleAppendEntriesFailure(result, resultChan)
-			}
-		case <-rf.leaderQuitCh:
-			rf.debug(WARN, "Quit replicateLogsToPeer")
-			return
-		default:
-			time.Sleep(10 * time.Millisecond)
-		}
-
-	}
-
-}
-
-func (rf *Raft) handleFailureBeat(resultChan chan AppendEntriesResult) {
-	for {
-		select {
-		case result := <-resultChan:
-			if result.Success {
-				if result.LastEntry {
-					rf.debugState()
-				} else {
-					rf.handleAppendEntriesSuccess(result, resultChan)
-				}
-			} else {
-				rf.handleAppendEntriesFailure(result, resultChan)
-			}
-		case <-rf.leaderQuitCh:
-			rf.debug(WARN, "Quit replicateLogsToPeer")
-			return
-		default:
-			time.Sleep(10 * time.Millisecond)
-		}
-	}
-
 }
 
 func (rf *Raft) receiveHigherTerm(term int) bool {
@@ -628,12 +548,12 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.electionTimeout = time.Now().Add(getElectionTimeout())
 
 	rf.applyCh = applyCh
-	rf.appendEntriesResultCh = make(chan AppendEntriesResult)
-	rf.leaderQuitCh = make(chan int)
-	rf.appendEntriesChan = make([]chan AppendEntriesMsg, len(peers))
-	for i := range rf.appendEntriesChan {
-		rf.appendEntriesChan[i] = make(chan AppendEntriesMsg)
+	rf.appendEntriesResultCh = make([]chan AppendEntriesResult, len(peers))
+	for i := range peers {
+		rf.appendEntriesResultCh[i] = make(chan AppendEntriesResult)
 	}
+	rf.leaderQuitCh = make(chan int)
+	rf.newEntriesCh = make(chan Log)
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
