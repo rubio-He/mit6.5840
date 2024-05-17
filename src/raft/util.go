@@ -7,7 +7,8 @@ import (
 )
 
 // Debugging
-const DebugLevel = VOTING
+
+const DebugLevel = EVENT | WARN | LOG_REPLICATING
 
 type Topic int
 
@@ -25,7 +26,7 @@ const (
 
 func (rf *Raft) debug(dLvl Topic, str string, a ...any) {
 	pc, _, _, _ := runtime.Caller(1)
-	funcName := fmt.Sprintf("%s", runtime.FuncForPC(pc).Name())
+	funcName := runtime.FuncForPC(pc).Name()
 	if dLvl&DebugLevel != 0 {
 		str = str + "\n"
 		prefix := fmt.Sprintf("SEVER(%d): [%s]: ", rf.me, funcName)
@@ -35,7 +36,7 @@ func (rf *Raft) debug(dLvl Topic, str string, a ...any) {
 
 func (rf *Raft) debugState() {
 	pc, _, _, _ := runtime.Caller(1)
-	funcName := fmt.Sprintf("%s", runtime.FuncForPC(pc).Name())
+	funcName := runtime.FuncForPC(pc).Name()
 	if STATE&DebugLevel != 0 {
 		str := fmt.Sprintf("Raft Log: %+v ", (*rf).log)
 		str += fmt.Sprintf("Current Term: %d ", (*rf).currentTerm)
@@ -62,11 +63,23 @@ func (rf *Raft) lastLogTerm() int {
 	return rf.log[len(rf.log)-1].Term
 }
 
+func (rf *Raft) logAt(idx int) Log {
+	if idx == 0 {
+		panic("No Entry at idx 0")
+	}
+
+	if idx > len(rf.log) || idx < 0 {
+		panic(fmt.Sprintf("Index out of boundary: %d, Slice length is %d", idx, len(rf.log)))
+	}
+
+	return rf.log[idx-1]
+}
+
 func logTermAt(log *[]Log, idx int) int {
 	if idx == 0 {
 		return InitialTerm
 	}
-	if idx > len(*log) {
+	if idx > len(*log) || idx < 0 {
 		panic(fmt.Sprintf("Index out of boundary: %d, Slice length is %d", idx, len(*log)))
 	}
 	return (*log)[idx-1].Term

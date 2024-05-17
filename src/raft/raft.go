@@ -156,47 +156,9 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 type AppendEntriesResult struct {
 	Success      bool
 	LastEntry    bool
+	Entry        Log
 	PrevLogIndex int
 	PrevLogTerm  int
-}
-
-func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
-	rf.debug(RPC, "Send AppendEntries to CLIENT(%d)", server)
-	ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)
-	return ok
-}
-
-// example code to send a RequestVote RPC to a server.
-// server is the index of the target server in rf.peers[].
-// expects RPC arguments in args.
-// fills in *reply with RPC reply, so caller should
-// pass &reply.
-// the types of the args and reply passed to Call() must be
-// the same as the types of the arguments declared in the
-// handler function (including whether they are pointers).
-//
-// The labrpc package simulates a lossy network, in which servers
-// may be unreachable, and in which requests and replies may be lost.
-// Call() sends a request and waits for a reply. If a reply arrives
-// within a timeout interval, Call() returns true; otherwise
-// Call() returns false. Thus Call() may not return for a while.
-// A false return can be caused by a dead server, a live server that
-// can't be reached, a lost request, or a lost reply.
-//
-// Call() is guaranteed to return (perhaps after a delay) *except* if the
-// handler function on the server side does not return.  Thus there
-// is no need to implement your own timeouts around Call().
-//
-// look at the comments in ../labrpc/labrpc.go for more details.
-//
-// if you're having trouble getting RPC to work, check that you've
-// capitalized all field names in structs passed over RPC, and
-// that the caller passes the address of the reply struct with &, not
-// the struct itself.
-func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
-	rf.debug(RPC, "Send Request Vote to CLIENT(%d)", server)
-	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
-	return ok
 }
 
 // the service using Raft (e.g. a k/v server) wants to start
@@ -212,7 +174,6 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 // Term. the third return value is true if this server believes it is
 // the leader.
 func (rf *Raft) Start(cmd interface{}) (int, int, bool) {
-	rf.debug(WARN, "Receive Command %d", cmd)
 	rf.mu.Lock()
 	index := len(rf.log) + 1
 	term := rf.currentTerm
@@ -221,32 +182,10 @@ func (rf *Raft) Start(cmd interface{}) (int, int, bool) {
 	if !isLeader {
 		return index, term, isLeader
 	}
-
-	// go rf.replicateLogsToPeers(cmd)
+	newEntry := Log{cmd, rf.currentTerm, len(rf.log) + 1}
+	rf.log = append(rf.log, newEntry)
 
 	return index, term, isLeader
-}
-
-func (rf *Raft) tryCommitEntry(successCnt *int, entry Log) {
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
-	*successCnt += 1
-	rf.debug(EVENT|LOG_REPLICATING, "Receive success replicate response, now total Cnt is %d", *successCnt)
-
-	// Leader will commit the entry if it finds the majority of followers have appended the entries.
-	if *successCnt > len(rf.peers)/2 {
-		rf.commitIndex = max(rf.commitIndex, entry.Index)
-		if entry.Index == rf.lastApplied+1 {
-			msg := ApplyMsg{
-				CommandValid: true,
-				Command:      entry.Command,
-				CommandIndex: entry.Index,
-			}
-			rf.applyCh <- msg
-			rf.lastApplied = entry.Index
-			rf.debug(APPLY, "Applied Message of %+v", msg)
-		}
-	}
 }
 
 // the tester doesn't halt goroutines created by Raft after each test,
@@ -362,25 +301,73 @@ func (rf *Raft) convertToLeader() {
 	}
 }
 
-func (rf *Raft) heartbeat(i int, timer *time.Ticker) {
+func (rf *Raft) heartbeat(i int, ticker *time.Ticker) {
 	for !rf.killed() {
 		select {
-		case <-timer.C:
+		case <-ticker.C:
 			go rf.sendHeartbeat(i)
 		case result := <-rf.appendEntriesResultCh[i]:
 			if result.Success {
 				if result.LastEntry {
-					rf.debugState()
+					if !result.isHeartbeat() {
+						rf.updatePeerIndexes(i, result.Entry.Index)
+						rf.debugState()
+						rf.tryCommitEntry(result.Entry)
+					}
 				} else {
 					rf.handleAppendEntriesSuccess(i, result)
 				}
 			} else {
 				rf.handleAppendEntriesFailure(i, result)
 			}
-			timer.Reset(10 * time.Second)
 		case <-rf.leaderQuitCh:
 			return
 		}
+	}
+}
+
+func (result *AppendEntriesResult) isHeartbeat() bool {
+	emptyLog := Log{}
+	return result.Entry == emptyLog
+}
+
+func (rf *Raft) updatePeerIndexes(i, logIndex int) {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	rf.nextIndex[i] = max(rf.nextIndex[i], logIndex+1)
+	rf.matchIndex[i] = max(rf.matchIndex[i], logIndex)
+}
+
+func (rf *Raft) tryCommitEntry(entry Log) {
+	cnt := 1
+	for i := range rf.peers {
+		if i == rf.me {
+			continue
+		}
+		if entry.Index+1 == rf.nextIndex[i] {
+			cnt += 1
+		}
+	}
+	rf.debug(EVENT, "Log: %+v", entry)
+	rf.debug(EVENT, "next Index: %+v", rf.nextIndex)
+	rf.debug(EVENT, "I recevie success Count %d", cnt)
+	// Leader will commit the entry if it finds the majority of followers have appended the entries.
+	if cnt > len(rf.peers)/2 {
+		rf.mu.Lock()
+		rf.commitIndex = max(rf.commitIndex, entry.Index)
+		if entry.Index == rf.lastApplied+1 {
+			rf.debug(EVENT, "entry %d commited", entry.Index)
+			msg := ApplyMsg{
+				CommandValid: true,
+				Command:      entry.Command,
+				CommandIndex: entry.Index,
+			}
+			rf.applyCh <- msg
+			rf.lastApplied = entry.Index
+			rf.debug(APPLY, "Applied Message of %+v", msg)
+		}
+		rf.mu.Unlock()
 	}
 }
 
@@ -417,6 +404,7 @@ func (rf *Raft) handleAppendEntriesFailure(i int, result AppendEntriesResult) {
 }
 
 func (rf *Raft) replicateLog(i int, prevLogIndex int, prevLogTerm int, entry Log) {
+	rf.mu.Lock()
 	args := AppendEntriesArgs{
 		Term:         rf.currentTerm,
 		LeaderId:     rf.me,
@@ -427,6 +415,7 @@ func (rf *Raft) replicateLog(i int, prevLogIndex int, prevLogTerm int, entry Log
 	}
 	leaderLastLogIndex := rf.lastLogIndex()
 	rf.mu.Unlock()
+	rf.debug(EVENT, "Send replicate log RPC to %d", i)
 	reply := &AppendEntriesReply{}
 	ok := rf.sendAppendEntries(i, &args, reply)
 
@@ -435,7 +424,6 @@ func (rf *Raft) replicateLog(i int, prevLogIndex int, prevLogTerm int, entry Log
 	}
 
 	if !rf.isLeader() || !reply.Success && rf.receiveHigherTerm(reply.Term) {
-		rf.leaderQuitCh <- 0
 		return
 	}
 
@@ -444,6 +432,7 @@ func (rf *Raft) replicateLog(i int, prevLogIndex int, prevLogTerm int, entry Log
 		rf.appendEntriesResultCh[i] <- AppendEntriesResult{
 			Success:      true,
 			LastEntry:    entry.Index == leaderLastLogIndex,
+			Entry:        entry,
 			PrevLogIndex: prevLogIndex,
 			PrevLogTerm:  prevLogTerm,
 		}
@@ -453,6 +442,7 @@ func (rf *Raft) replicateLog(i int, prevLogIndex int, prevLogTerm int, entry Log
 		rf.appendEntriesResultCh[i] <- AppendEntriesResult{
 			Success:      false,
 			LastEntry:    entry.Index == leaderLastLogIndex,
+			Entry:        entry,
 			PrevLogIndex: prevLogIndex,
 			PrevLogTerm:  prevLogTerm,
 		}
@@ -461,14 +451,22 @@ func (rf *Raft) replicateLog(i int, prevLogIndex int, prevLogTerm int, entry Log
 
 func (rf *Raft) sendHeartbeat(i int) {
 	rf.mu.Lock()
-	lastLogIndex := rf.lastLogIndex()
-	lastLogTerm := rf.lastLogTerm()
+	peerNextIdx := rf.nextIndex[i]
+	prevIdx := peerNextIdx - 1
+	prevTerm := logTermAt(&rf.log, prevIdx)
+	lastIdx := rf.lastLogIndex()
+
+	entries := []Log{}
+	if lastIdx >= peerNextIdx {
+		entries = append(entries, rf.logAt(peerNextIdx))
+	}
+
 	args := AppendEntriesArgs{
 		Term:         rf.currentTerm,
 		LeaderId:     rf.me,
-		PrevLogIndex: lastLogIndex,
-		PrevLogTerm:  lastLogTerm,
-		Entries:      []Log{},
+		PrevLogIndex: prevIdx,
+		PrevLogTerm:  prevTerm,
+		Entries:      entries,
 		LeaderCommit: rf.commitIndex,
 	}
 	rf.mu.Unlock()
@@ -479,26 +477,27 @@ func (rf *Raft) sendHeartbeat(i int) {
 		return
 	}
 	if !rf.isLeader() || ok && !reply.Success && rf.receiveHigherTerm(reply.Term) {
-		rf.leaderQuitCh <- 0
 		return
 	}
 
-	if !reply.Success {
-		rf.debug(WARN, "Fail heartbeat for server %d", i)
-		rf.appendEntriesResultCh[i] <- AppendEntriesResult{
-			Success:      false,
-			PrevLogIndex: lastLogIndex,
-			PrevLogTerm:  lastLogTerm,
-			LastEntry:    true,
-		}
-	} else {
-		rf.appendEntriesResultCh[i] <- AppendEntriesResult{
-			Success:      true,
-			PrevLogIndex: lastLogIndex,
-			PrevLogTerm:  lastLogTerm,
-			LastEntry:    true,
-		}
+	result := AppendEntriesResult{
+		PrevLogIndex: prevIdx,
+		PrevLogTerm:  prevTerm,
+		LastEntry:    true,
 	}
+
+	if reply.Success {
+		result.Success = true
+	} else {
+		rf.debug(WARN, "Fail heartbeat for server %d", i)
+		result.Success = false
+	}
+
+	if lastIdx >= peerNextIdx {
+		result.Entry = rf.logAt(peerNextIdx)
+	}
+
+	rf.appendEntriesResultCh[i] <- result
 }
 
 func (rf *Raft) receiveHigherTerm(term int) bool {
@@ -512,6 +511,7 @@ func (rf *Raft) receiveHigherTerm(term int) bool {
 		rf.state = FOLLOWER
 		rf.electionTimeout = time.Now().Add(getElectionTimeout())
 		rf.voteFor = -1
+		close(rf.leaderQuitCh)
 		return true
 	}
 }
