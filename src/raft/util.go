@@ -8,7 +8,7 @@ import (
 
 // Debugging
 
-const DebugLevel = EVENT | WARN | LOG_REPLICATING
+const DebugLevel = 0
 
 type Topic int
 

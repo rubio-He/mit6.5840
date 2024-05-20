@@ -175,13 +175,15 @@ type AppendEntriesResult struct {
 // the leader.
 func (rf *Raft) Start(cmd interface{}) (int, int, bool) {
 	rf.mu.Lock()
+	defer rf.mu.Unlock()
 	index := len(rf.log) + 1
 	term := rf.currentTerm
 	isLeader := rf.state == LEADER
-	rf.mu.Unlock()
 	if !isLeader {
+		rf.debug(WARN, "Not a leader for cmd %d", cmd)
 		return index, term, isLeader
 	}
+	rf.debug(WARN, "A leader recevie for cmd %d", cmd)
 	newEntry := Log{cmd, rf.currentTerm, len(rf.log) + 1}
 	rf.log = append(rf.log, newEntry)
 
@@ -203,35 +205,37 @@ func (rf *Raft) Kill() {
 
 func (rf *Raft) killed() bool {
 	z := atomic.LoadInt32(&rf.dead)
-	ok := rf.sendRequestVote(rf.me, &RequestVoteArgs{
-		CandidateId: rf.me,
-	}, &RequestVoteReply{})
-	return z == 1 && ok
+	return z == 1
 }
 
 func (rf *Raft) ticker() {
 	for !rf.killed() {
 		rf.mu.Lock()
 		state := rf.state
+		timeout := rf.electionTimeout
 		rf.mu.Unlock()
-		if state == FOLLOWER || state == CANDIDATE {
-			rf.mu.Lock()
-			timeout := rf.electionTimeout
-			rf.mu.Unlock()
-			if time.Now().Before(timeout) {
-				continue
-			}
-			votes := 1
+		if state != LEADER && time.Now().After(timeout) {
 
 			rf.mu.Lock()
 			rf.state = CANDIDATE
+			rf.mu.Unlock()
+
+			ok := rf.sendRequestVote(rf.me, &RequestVoteArgs{
+				CandidateId: rf.me,
+			}, &RequestVoteReply{})
+			if !ok {
+				continue
+			}
+			rf.debug(APPLY, "%d", ok)
+			votes := 1
+			rf.mu.Lock()
 			rf.currentTerm++
 			rf.voteFor = rf.me
 			currentTerm := rf.currentTerm
 			lastLogIndex := rf.lastLogIndex()
 			lastLogTerm := rf.lastLogTerm()
 			rf.mu.Unlock()
-
+			rf.debug(VOTING, "Start voting my term is %d", rf.currentTerm)
 			for idx := range rf.peers {
 				if idx == rf.me {
 					continue
@@ -255,9 +259,9 @@ func (rf *Raft) ticker() {
 					}
 				}(idx, currentTerm)
 			}
-			electionTimeout := rf.resetElectionTimeout()
-			time.Sleep(electionTimeout)
 		}
+		electionTimeout := rf.resetElectionTimeout()
+		time.Sleep(electionTimeout)
 	}
 }
 
@@ -293,10 +297,7 @@ func (rf *Raft) convertToLeader() {
 	rf.leaderQuitCh = make(chan int)
 
 	for i := range rf.peers {
-		if i == rf.me {
-			continue
-		}
-		ticker := time.NewTicker(10 * time.Millisecond)
+		ticker := time.NewTicker(50 * time.Millisecond)
 		go rf.heartbeat(i, ticker)
 	}
 }
@@ -311,7 +312,6 @@ func (rf *Raft) heartbeat(i int, ticker *time.Ticker) {
 				if result.LastEntry {
 					if !result.isHeartbeat() {
 						rf.updatePeerIndexes(i, result.Entry.Index)
-						rf.debugState()
 						rf.tryCommitEntry(result.Entry)
 					}
 				} else {
@@ -355,17 +355,22 @@ func (rf *Raft) tryCommitEntry(entry Log) {
 	// Leader will commit the entry if it finds the majority of followers have appended the entries.
 	if cnt > len(rf.peers)/2 {
 		rf.mu.Lock()
-		rf.commitIndex = max(rf.commitIndex, entry.Index)
-		if entry.Index == rf.lastApplied+1 {
-			rf.debug(EVENT, "entry %d commited", entry.Index)
-			msg := ApplyMsg{
-				CommandValid: true,
-				Command:      entry.Command,
-				CommandIndex: entry.Index,
+		// Only commit log if this log is from its current Term.
+		if entry.Term == rf.currentTerm {
+			for rf.commitIndex < entry.Index {
+				rf.commitIndex += 1
+				toBeAppliedEntry := rf.logAt(rf.commitIndex)
+				rf.debug(APPLY, "entry %d commited", toBeAppliedEntry.Index)
+				rf.debugState()
+				msg := ApplyMsg{
+					CommandValid: true,
+					Command:      toBeAppliedEntry.Command,
+					CommandIndex: toBeAppliedEntry.Index,
+				}
+				rf.applyCh <- msg
+				rf.lastApplied = toBeAppliedEntry.Index
+				rf.debug(APPLY, "Applied Message of %+v", msg)
 			}
-			rf.applyCh <- msg
-			rf.lastApplied = entry.Index
-			rf.debug(APPLY, "Applied Message of %+v", msg)
 		}
 		rf.mu.Unlock()
 	}
@@ -423,34 +428,39 @@ func (rf *Raft) replicateLog(i int, prevLogIndex int, prevLogTerm int, entry Log
 		return
 	}
 
-	if !rf.isLeader() || !reply.Success && rf.receiveHigherTerm(reply.Term) {
+	if !rf.isLeader() {
 		return
+	}
+
+	if !reply.Success && rf.receiveHigherTerm(reply.Term) {
+		close(rf.leaderQuitCh)
+		return
+	}
+
+	result := AppendEntriesResult{
+		LastEntry:    entry.Index == leaderLastLogIndex,
+		Entry:        entry,
+		PrevLogIndex: prevLogIndex,
+		PrevLogTerm:  prevLogTerm,
 	}
 
 	if reply.Success {
 		rf.debug(LOG_REPLICATING|EVENT, "Receive success replicate log response from %d", i)
-		rf.appendEntriesResultCh[i] <- AppendEntriesResult{
-			Success:      true,
-			LastEntry:    entry.Index == leaderLastLogIndex,
-			Entry:        entry,
-			PrevLogIndex: prevLogIndex,
-			PrevLogTerm:  prevLogTerm,
-		}
-		return
+		result.Success = true
 	} else {
 		rf.debug(LOG_REPLICATING|EVENT, "Receive fail replicate log response from %d", i)
-		rf.appendEntriesResultCh[i] <- AppendEntriesResult{
-			Success:      false,
-			LastEntry:    entry.Index == leaderLastLogIndex,
-			Entry:        entry,
-			PrevLogIndex: prevLogIndex,
-			PrevLogTerm:  prevLogTerm,
-		}
+		result.Success = false
 	}
+	rf.appendEntriesResultCh[i] <- result
 }
 
 func (rf *Raft) sendHeartbeat(i int) {
 	rf.mu.Lock()
+	if rf.state != LEADER {
+		rf.mu.Unlock()
+		return
+	}
+
 	peerNextIdx := rf.nextIndex[i]
 	prevIdx := peerNextIdx - 1
 	prevTerm := logTermAt(&rf.log, prevIdx)
@@ -473,10 +483,29 @@ func (rf *Raft) sendHeartbeat(i int) {
 
 	reply := AppendEntriesReply{}
 	ok := rf.sendAppendEntries(i, &args, &reply)
-	if !ok {
+
+	if !rf.isLeader() {
 		return
 	}
-	if !rf.isLeader() || ok && !reply.Success && rf.receiveHigherTerm(reply.Term) {
+
+	// If the leader is disconnected, quit the leader.
+	if i == rf.me {
+		if !ok {
+			rf.mu.Lock()
+			defer rf.mu.Unlock()
+
+			rf.state = FOLLOWER
+			rf.electionTimeout = time.Now().Add(getElectionTimeout())
+			close(rf.leaderQuitCh)
+		}
+		return
+	}
+	if !ok {
+		rf.debug(WARN, "Failed send heartbeat")
+		return
+	}
+	if ok && !reply.Success && rf.receiveHigherTerm(reply.Term) {
+		close(rf.leaderQuitCh)
 		return
 	}
 
@@ -503,15 +532,17 @@ func (rf *Raft) sendHeartbeat(i int) {
 func (rf *Raft) receiveHigherTerm(term int) bool {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
+
 	if rf.currentTerm >= term {
 		return false
 	} else {
-		rf.debug(EVENT, "Receive higher term %d, not a leader now.", term)
+		rf.debug(WARN, "Receive higher term %d, not a leader now.", term)
 		rf.currentTerm = term
 		rf.state = FOLLOWER
 		rf.electionTimeout = time.Now().Add(getElectionTimeout())
+		rf.debug(WARN, "timeout is %s", rf.electionTimeout)
+		rf.debug(WARN, "current time  is %s", time.Now())
 		rf.voteFor = -1
-		close(rf.leaderQuitCh)
 		return true
 	}
 }

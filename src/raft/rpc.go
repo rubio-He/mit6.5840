@@ -85,7 +85,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		return
 	}
 
-	if rf.lastLogIndex() > args.LastLogIndex || rf.lastLogIndex() == args.LastLogIndex && rf.lastLogTerm() > args.LastLogTerm {
+	if rf.lastLogTerm() > args.LastLogTerm || rf.lastLogIndex() == args.LastLogIndex && rf.lastLogIndex() > args.LastLogIndex {
 		rf.debug(VOTING, "Not grant vote because my log is more update to date last idx (%d), last term (%d) and request is %+v", rf.lastLogIndex(), rf.lastLogTerm(), args)
 		reply.VoteGranted = false
 		reply.Term = rf.currentTerm
@@ -124,10 +124,15 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	defer rf.mu.Unlock()
 	//rf.debug(EVENT, "Start appending Entries")
 	//defer rf.debug(EVENT, "End appending Entries")
-	// rf.debug(EVENT, "Request: %+v", args)
+	// rf.debug(WARN, "Request: %+v", args)
 	// rf.debug(EVENT, "%+v", args)
 
+	if args.LeaderId == rf.me {
+		return
+	}
+
 	if rf.currentTerm > args.Term {
+		rf.debug(WARN, "Higher Term", args)
 		reply.Term = rf.currentTerm
 		reply.Success = false
 		return
@@ -136,7 +141,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	if args.PrevLogIndex > rf.lastLogIndex() || args.PrevLogIndex < len(rf.log)+1 && args.PrevLogIndex > 0 && rf.log[args.PrevLogIndex-1].Term != args.PrevLogTerm {
 		rf.debug(WARN, "I can't append the entry because the previous log is different.)")
 		rf.debug(WARN, "Request: %+v", args)
-		rf.debug(WARN, "%+v", rf)
+		rf.debugState()
 		reply.Term = rf.currentTerm
 		reply.Success = false
 		return
@@ -195,7 +200,6 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			rf.applyCh <- msg
 			rf.lastApplied = entry.Index
 			rf.debug(APPLY, "Applied Message of %+v", msg)
-
 		}
 	}
 
