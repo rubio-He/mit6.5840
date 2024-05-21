@@ -101,6 +101,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 
 		reply.VoteGranted = true
 		reply.Term = rf.currentTerm
+		rf.persist()
 		return
 	}
 
@@ -112,6 +113,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		rf.state = FOLLOWER
 		rf.voteFor = args.CandidateId
 		rf.electionTimeout = time.Now().Add(getElectionTimeout())
+		rf.persist()
 		return
 	} else {
 		rf.debug(VOTING, "Ask for Candidate %d,Already voted for %d", args.CandidateId, rf.voteFor)
@@ -185,6 +187,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		}
 		rf.debug(LOG_REPLICATING, "Appended a entry into log")
 	}
+	rf.persist()
 	if args.LeaderCommit > rf.commitIndex && len(rf.log) > 0 {
 		lastEntryIndex := lastEntry(&rf.log).Index
 		rf.commitIndex = min(lastEntryIndex, args.LeaderCommit)

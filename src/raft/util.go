@@ -8,7 +8,7 @@ import (
 
 // Debugging
 
-const DebugLevel = 0
+const DebugLevel = PERSIST
 
 type Topic int
 
@@ -22,6 +22,7 @@ const (
 	VOTING          Topic = 0b10000000
 	LOG_REPLICATING Topic = 0b100000000
 	APPLY           Topic = 0b1000000000
+	PERSIST         Topic = 0b10000000000
 )
 
 func (rf *Raft) debug(dLvl Topic, str string, a ...any) {
