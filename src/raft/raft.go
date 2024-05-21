@@ -308,10 +308,14 @@ func (rf *Raft) heartbeat(i int, ticker *time.Ticker) {
 		case <-ticker.C:
 			go rf.sendHeartbeat(i)
 		case result := <-rf.appendEntriesResultCh[i]:
-			if result.LastEntry {
-				if !result.isHeartbeat() {
-					rf.updatePeerIndexes(i, result.Entry.Index)
-					rf.tryCommitEntry(result.Entry)
+			if result.Success {
+				if result.LastEntry {
+					if !result.isHeartbeat() {
+						rf.updatePeerIndexes(i, result.Entry.Index)
+						rf.tryCommitEntry(result.Entry)
+					}
+				} else {
+					rf.handleAppendEntries(i, result)
 				}
 			} else {
 				rf.handleAppendEntries(i, result)
@@ -478,7 +482,7 @@ func (rf *Raft) sendHeartbeat(i int) {
 		rf.debug(WARN, "Failed send heartbeat")
 		return
 	}
-	if ok && !reply.Success && rf.receiveHigherTerm(reply.Term) {
+	if !reply.Success && rf.receiveHigherTerm(reply.Term) {
 		close(rf.leaderQuitCh)
 		return
 	}
