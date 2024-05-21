@@ -75,14 +75,14 @@ func (rf *Raft) logAt(idx int) Log {
 	return rf.log[idx-1]
 }
 
-func logTermAt(log *[]Log, idx int) int {
+func (rf *Raft) logTermAt(idx int) int {
 	if idx == 0 {
 		return InitialTerm
 	}
-	if idx > len(*log) || idx < 0 {
-		panic(fmt.Sprintf("Index out of boundary: %d, Slice length is %d", idx, len(*log)))
+	if idx > len(rf.log) || idx < 0 {
+		panic(fmt.Sprintf("Index out of boundary: %d, Slice length is %d", idx, len(rf.log)))
 	}
-	return (*log)[idx-1].Term
+	return (rf.log)[idx-1].Term
 }
 
 func lastEntry(log *[]Log) *Log {

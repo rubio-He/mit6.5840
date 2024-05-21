@@ -308,17 +308,13 @@ func (rf *Raft) heartbeat(i int, ticker *time.Ticker) {
 		case <-ticker.C:
 			go rf.sendHeartbeat(i)
 		case result := <-rf.appendEntriesResultCh[i]:
-			if result.Success {
-				if result.LastEntry {
-					if !result.isHeartbeat() {
-						rf.updatePeerIndexes(i, result.Entry.Index)
-						rf.tryCommitEntry(result.Entry)
-					}
-				} else {
-					rf.handleAppendEntriesSuccess(i, result)
+			if result.LastEntry {
+				if !result.isHeartbeat() {
+					rf.updatePeerIndexes(i, result.Entry.Index)
+					rf.tryCommitEntry(result.Entry)
 				}
 			} else {
-				rf.handleAppendEntriesFailure(i, result)
+				rf.handleAppendEntries(i, result)
 			}
 		case <-rf.leaderQuitCh:
 			return
@@ -376,36 +372,25 @@ func (rf *Raft) tryCommitEntry(entry Log) {
 	}
 }
 
-func (rf *Raft) handleAppendEntriesSuccess(i int, result AppendEntriesResult) {
+func (rf *Raft) handleAppendEntries(i int, result AppendEntriesResult) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
-	prevLogIndex := result.PrevLogIndex + 1
-	prevLogTerm := logTermAt(&rf.log, prevLogIndex)
-	entry := rf.log[prevLogIndex]
+	var prevLogIndex int
+	if result.Success {
+		prevLogIndex = result.PrevLogIndex + 1
+	} else {
+		prevLogIndex = result.PrevLogIndex - 1
+	}
 
-	// Increase the followers' next index.
+	// Reset the followers' next index.
 	rf.nextIndex[i] = prevLogIndex + 1
-	// Increase the followers' match index.
-	rf.matchIndex[i] = result.PrevLogIndex
+	if !result.Success {
+		// Increase the followers' match index.
+		rf.matchIndex[i] = result.PrevLogIndex
+	}
 
-	rf.debug(LOG_REPLICATING, "Resend replicate log request to %d, prevLogIndex %d", i, prevLogIndex)
-	go rf.replicateLog(i, prevLogIndex, prevLogTerm, entry)
-}
-
-func (rf *Raft) handleAppendEntriesFailure(i int, result AppendEntriesResult) {
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
-
-	prevLogIndex := result.PrevLogIndex - 1
-	prevLogTerm := logTermAt(&rf.log, prevLogIndex)
-	entry := rf.log[prevLogIndex]
-
-	// Decrease the followers' next index.
-	rf.nextIndex[i] = prevLogIndex + 1
-
-	rf.debug(LOG_REPLICATING, "Resend replicate log request, prevLogIndex %d", prevLogIndex)
-	go rf.replicateLog(i, prevLogIndex, prevLogTerm, entry)
+	go rf.replicateLog(i, prevLogIndex, rf.logTermAt(prevLogIndex), rf.log[prevLogIndex])
 }
 
 func (rf *Raft) replicateLog(i int, prevLogIndex int, prevLogTerm int, entry Log) {
@@ -424,32 +409,21 @@ func (rf *Raft) replicateLog(i int, prevLogIndex int, prevLogTerm int, entry Log
 	reply := &AppendEntriesReply{}
 	ok := rf.sendAppendEntries(i, &args, reply)
 
-	if !ok {
+	if !ok || !rf.isLeader() {
 		return
 	}
 
-	if !rf.isLeader() {
-		return
-	}
-
-	if !reply.Success && rf.receiveHigherTerm(reply.Term) {
+	if rf.receiveHigherTerm(reply.Term) {
 		close(rf.leaderQuitCh)
 		return
 	}
 
 	result := AppendEntriesResult{
+		Success:      reply.Success,
 		LastEntry:    entry.Index == leaderLastLogIndex,
 		Entry:        entry,
 		PrevLogIndex: prevLogIndex,
 		PrevLogTerm:  prevLogTerm,
-	}
-
-	if reply.Success {
-		rf.debug(LOG_REPLICATING|EVENT, "Receive success replicate log response from %d", i)
-		result.Success = true
-	} else {
-		rf.debug(LOG_REPLICATING|EVENT, "Receive fail replicate log response from %d", i)
-		result.Success = false
 	}
 	rf.appendEntriesResultCh[i] <- result
 }
@@ -463,7 +437,7 @@ func (rf *Raft) sendHeartbeat(i int) {
 
 	peerNextIdx := rf.nextIndex[i]
 	prevIdx := peerNextIdx - 1
-	prevTerm := logTermAt(&rf.log, prevIdx)
+	prevTerm := rf.logTermAt(prevIdx)
 	lastIdx := rf.lastLogIndex()
 
 	entries := []Log{}
@@ -510,16 +484,10 @@ func (rf *Raft) sendHeartbeat(i int) {
 	}
 
 	result := AppendEntriesResult{
+		Success:      reply.Success,
 		PrevLogIndex: prevIdx,
 		PrevLogTerm:  prevTerm,
 		LastEntry:    true,
-	}
-
-	if reply.Success {
-		result.Success = true
-	} else {
-		rf.debug(WARN, "Fail heartbeat for server %d", i)
-		result.Success = false
 	}
 
 	if lastIdx >= peerNextIdx {
