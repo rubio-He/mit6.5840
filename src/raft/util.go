@@ -8,7 +8,7 @@ import (
 
 // Debugging
 
-const DebugLevel = PERSIST
+const DebugLevel = VOTING
 
 type Topic int
 

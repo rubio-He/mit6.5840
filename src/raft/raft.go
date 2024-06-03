@@ -49,7 +49,7 @@ type ApplyMsg struct {
 	SnapshotIndex int
 }
 
-// Raft State in election.
+// State in election.
 type State int
 
 const InitialTerm = 1
@@ -186,7 +186,7 @@ func (rf *Raft) Start(cmd interface{}) (int, int, bool) {
 		rf.debug(WARN, "Not a leader for cmd %d", cmd)
 		return index, term, isLeader
 	}
-	rf.debug(WARN, "A leader recevie for cmd %d", cmd)
+	rf.debug(WARN, "A leader receive for cmd %d", cmd)
 	newEntry := Log{cmd, rf.currentTerm, len(rf.log) + 1}
 	rf.log = append(rf.log, newEntry)
 	rf.persist()
@@ -297,7 +297,7 @@ func (rf *Raft) convertToLeader() {
 		rf.nextIndex[i] = rf.lastLogIndex() + 1
 		rf.matchIndex[i] = 0
 	}
-	// Clean the leader quit channal.
+	// Clean the leader quit channel.
 	rf.leaderQuitCh = make(chan int)
 
 	for i := range rf.peers {
@@ -355,7 +355,7 @@ func (rf *Raft) tryCommitEntry(entry Log) {
 	}
 	rf.debug(EVENT, "Log: %+v", entry)
 	rf.debug(EVENT, "next Index: %+v", rf.nextIndex)
-	rf.debug(EVENT, "I recevie success Count %d", cnt)
+	rf.debug(EVENT, "I receive success Count %d", cnt)
 	// Leader will commit the entry if it finds the majority of followers have appended the entries.
 	if cnt > len(rf.peers)/2 {
 		rf.mu.Lock()

@@ -73,6 +73,7 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
+	term := rf.currentTerm
 
 	if args.CandidateId == rf.me {
 		return
@@ -83,19 +84,21 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		reply.VoteGranted = false
 		reply.Term = rf.currentTerm
 		return
+	} else if args.Term > rf.currentTerm {
+		rf.currentTerm = args.Term
 	}
 
-	if rf.lastLogTerm() > args.LastLogTerm || rf.lastLogIndex() == args.LastLogIndex && rf.lastLogIndex() > args.LastLogIndex {
+	rf.debug(VOTING, "Candidate up-to-date check:,%d ,%d, %+v", rf.lastLogIndex(), rf.lastLogTerm(), args)
+	if rf.lastLogTerm() > args.LastLogTerm || rf.lastLogTerm() == args.LastLogTerm && rf.lastLogIndex() > args.LastLogIndex {
 		rf.debug(VOTING, "Not grant vote because my log is more update to date last idx (%d), last term (%d) and request is %+v", rf.lastLogIndex(), rf.lastLogTerm(), args)
 		reply.VoteGranted = false
 		reply.Term = rf.currentTerm
 		return
 	}
 
-	if args.Term > rf.currentTerm {
+	if args.Term > term {
 		rf.debug(VOTING, "See a higher term from client %d, term is %d, my term is %d. Vote Grant!", args.CandidateId, args.Term, rf.currentTerm)
 		rf.state = FOLLOWER
-		rf.currentTerm = args.Term
 		rf.voteFor = args.CandidateId
 		rf.electionTimeout = time.Now().Add(getElectionTimeout())
 
@@ -106,10 +109,10 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	}
 
 	if rf.voteFor == args.CandidateId || rf.voteFor == -1 {
+		rf.debug(VOTING, "vote grant")
 		reply.VoteGranted = true
 		reply.Term = args.Term
 
-		rf.currentTerm = args.Term
 		rf.state = FOLLOWER
 		rf.voteFor = args.CandidateId
 		rf.electionTimeout = time.Now().Add(getElectionTimeout())
@@ -124,10 +127,6 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	//util.Println("%d received AppendEntries from %d for term %d, its term is %d", rf.me, args.LeaderId, args.Term, rf.currentTerm)
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	//rf.debug(EVENT, "Start appending Entries")
-	//defer rf.debug(EVENT, "End appending Entries")
-	// rf.debug(WARN, "Request: %+v", args)
-	// rf.debug(EVENT, "%+v", args)
 
 	if args.LeaderId == rf.me {
 		return
@@ -143,7 +142,6 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	if args.PrevLogIndex > rf.lastLogIndex() || args.PrevLogIndex < len(rf.log)+1 && args.PrevLogIndex > 0 && rf.log[args.PrevLogIndex-1].Term != args.PrevLogTerm {
 		rf.debug(WARN, "I can't append the entry because the previous log is different.)")
 		rf.debug(WARN, "Request: %+v", args)
-		rf.debugState()
 		reply.Term = rf.currentTerm
 		reply.Success = false
 		return
@@ -163,9 +161,6 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	for _, entry := range args.Entries {
 		i := entry.Index
 		if i == len(rf.log)+1 {
-			rf.debug(WARN, "Append a new entry.")
-			rf.debug(WARN, "%+v", args)
-			rf.debug(WARN, "%+v", rf)
 			rf.log = append(rf.log, Log{
 				Command: entry.Command,
 				Term:    entry.Term,
