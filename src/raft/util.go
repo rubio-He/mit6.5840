@@ -3,12 +3,14 @@ package raft
 import (
 	"fmt"
 	"log"
+	"math/rand"
 	"runtime"
+	"time"
 )
 
 // Debugging
 
-const DebugLevel = VOTING
+const DebugLevel = STATE | VOTING
 
 type Topic int
 
@@ -66,7 +68,7 @@ func (rf *Raft) lastLogTerm() int {
 
 func (rf *Raft) logAt(idx int) Log {
 	if idx == 0 {
-		panic("No Entry at idx 0")
+		panic("No LastEntryInRequest at idx 0")
 	}
 
 	if idx > len(rf.log) || idx < 0 {
@@ -118,4 +120,13 @@ func (rf *Raft) isCandidate() bool {
 	defer rf.mu.Unlock()
 
 	return rf.state == CANDIDATE
+}
+
+// getElectionTimeout
+// Generates election time out for leader election.
+// return a random amount of time between 50 and 350
+// milliseconds.
+func getElectionTimeout() time.Duration {
+	ms := 50 + (rand.Int63() % 300)
+	return time.Duration(ms) * time.Millisecond
 }

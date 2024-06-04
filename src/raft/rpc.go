@@ -86,6 +86,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		return
 	} else if args.Term > rf.currentTerm {
 		rf.currentTerm = args.Term
+		rf.state = FOLLOWER
 	}
 
 	rf.debug(VOTING, "Candidate up-to-date check:,%d ,%d, %+v", rf.lastLogIndex(), rf.lastLogTerm(), args)
@@ -98,7 +99,6 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 
 	if args.Term > term {
 		rf.debug(VOTING, "See a higher term from client %d, term is %d, my term is %d. Vote Grant!", args.CandidateId, args.Term, rf.currentTerm)
-		rf.state = FOLLOWER
 		rf.voteFor = args.CandidateId
 		rf.electionTimeout = time.Now().Add(getElectionTimeout())
 
@@ -176,7 +176,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 				rf.log = rf.log[:i]
 			}
 		} else {
-			rf.debug(WARN, "The Entry idx is illegal to append to the logs.")
+			rf.debug(WARN, "The LastEntryInRequest idx is illegal to append to the logs.")
 			rf.debug(WARN, "%+v", args)
 			rf.debug(WARN, "%+v", rf)
 		}
@@ -186,19 +186,6 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	if args.LeaderCommit > rf.commitIndex && len(rf.log) > 0 {
 		lastEntryIndex := lastEntry(&rf.log).Index
 		rf.commitIndex = min(lastEntryIndex, args.LeaderCommit)
-		rf.debug(EVENT, "Commit to %d", args.LeaderCommit)
-		rf.debugState()
-		for i := rf.lastApplied; i < rf.commitIndex; i++ {
-			entry := rf.log[i]
-			msg := ApplyMsg{
-				CommandValid: true,
-				Command:      entry.Command,
-				CommandIndex: entry.Index,
-			}
-			rf.applyCh <- msg
-			rf.lastApplied = entry.Index
-			rf.debug(APPLY, "Applied Message of %+v", msg)
-		}
 	}
 
 	reply.Term = rf.currentTerm
