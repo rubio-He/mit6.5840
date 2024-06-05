@@ -301,7 +301,7 @@ func (rf *Raft) electionCounting(votes *int) {
 }
 
 func (rf *Raft) convertToLeader() {
-	rf.debug(EVENT|VOTING, "Become a leader. term is %d", rf.currentTerm)
+	rf.debug(EVENT|ELECTION, "Become a leader. term is %d", rf.currentTerm)
 	rf.state = LEADER
 	// Initialize the next indexes to last log index + 1.
 	// Initialize the match indexes to 0.
@@ -327,18 +327,8 @@ func (rf *Raft) heartbeat(i int, ticker *time.Ticker) {
 		case <-ticker.C:
 			go rf.sendHeartbeat(i)
 		case result := <-rf.appendEntriesResultCh[i]:
-			if result.Success {
-				if result.ContainLastEntryOfLeader {
-					if !result.isHeartbeat() {
-						rf.updatePeerIndexes(i, result.LastEntryInRequest.Index)
-						rf.tryCommitEntry()
-					}
-				} else {
-					rf.handleAppendEntries(i, result)
-				}
-			} else {
-				rf.handleAppendEntries(i, result)
-			}
+			rf.handleAppendEntries(i, result)
+			rf.tryCommitEntry()
 		case <-rf.leaderQuitCh:
 			return
 		}
@@ -378,15 +368,13 @@ func (rf *Raft) handleAppendEntries(i int, result AppendEntriesResult) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
-	var prevLogIndex int
 	if result.Success {
-		prevLogIndex = result.PrevLogIndex + 1
+		rf.nextIndex[i] = result.LastEntryInRequest.Index + 1
 	} else {
-		prevLogIndex = max(0, result.PrevLogIndex/2-1)
+		rf.nextIndex[i] = max(1, result.PrevLogIndex/2-1)
 	}
 
 	// Reset the followers' next index.
-	rf.nextIndex[i] = prevLogIndex + 1
 	var entries []Log
 	if result.Success {
 		entries = rf.log[rf.nextIndex[i]-1:]
@@ -394,9 +382,15 @@ func (rf *Raft) handleAppendEntries(i int, result AppendEntriesResult) {
 		entries = rf.log[rf.nextIndex[i]-1 : rf.nextIndex[i]]
 	}
 
-	rf.matchIndex[i] = result.PrevLogIndex
+	// update match index if success.
+	if result.Success {
+		rf.matchIndex[i] = result.PrevLogIndex
+	}
+	prevLogIndex := rf.nextIndex[i] - 1
 
-	go rf.replicateLog(i, prevLogIndex, rf.logTermAt(prevLogIndex), entries)
+	if len(entries) != 0 {
+		go rf.replicateLog(i, prevLogIndex, rf.logTermAt(prevLogIndex), entries)
+	}
 }
 
 func (rf *Raft) replicateLog(i int, prevLogIndex int, prevLogTerm int, entries []Log) {

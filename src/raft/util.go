@@ -10,7 +10,7 @@ import (
 
 // Debugging
 
-const DebugLevel = STATE | VOTING
+const DebugLevel = STATE | ELECTION
 
 type Topic int
 
@@ -25,6 +25,7 @@ const (
 	LOG_REPLICATING Topic = 0b100000000
 	APPLY           Topic = 0b1000000000
 	PERSIST         Topic = 0b10000000000
+	ELECTION        Topic = 0b100000000000
 )
 
 func (rf *Raft) debug(dLvl Topic, str string, a ...any) {
