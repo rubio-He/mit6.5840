@@ -148,7 +148,6 @@ func (rf *Raft) readPersist(data []byte) {
 }
 
 // the service says it has created a snapshot that has
-//
 // all info up to and including index. this means the
 // service no longer needs the log through (and including)
 // that index. Raft should now trim its log as much as possible.
@@ -259,13 +258,13 @@ func (rf *Raft) ticker() {
 	}
 }
 
-func (rf *Raft) apply() {
+func (rf *Raft) applier() {
 	ticker := time.NewTicker(30 * time.Millisecond)
 	for !rf.killed() {
 		select {
 		case <-ticker.C:
 			rf.mu.Lock()
-			if rf.commitIndex > rf.lastApplied {
+			if rf.commitIndex > rf.lastApplied && rf.lastApplied < len(rf.log) {
 				toBeAppliedEntry := rf.log[rf.lastApplied]
 				msg := ApplyMsg{
 					CommandValid: true,
@@ -545,7 +544,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	// Start ticker goroutine to start elections
 	go rf.ticker()
-	go rf.apply()
+	go rf.applier()
 
 	return rf
 }
