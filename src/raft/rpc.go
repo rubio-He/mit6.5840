@@ -1,6 +1,9 @@
 package raft
 
-import "time"
+import (
+	"sort"
+	"time"
+)
 
 type RequestVoteArgs struct {
 	Term         int // candidate's term
@@ -29,6 +32,10 @@ type AppendEntriesArgs struct {
 type AppendEntriesReply struct {
 	Term    int
 	Success bool
+
+	// Log backtracking optimization
+	ConflictIndex int
+	ConflictTerm  int
 }
 
 func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
@@ -73,7 +80,7 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	term := rf.currentTerm
+	defer rf.persist()
 
 	if args.CandidateId == rf.me {
 		return
@@ -87,72 +94,71 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	} else if args.Term > rf.currentTerm {
 		rf.currentTerm = args.Term
 		rf.state = FOLLOWER
+		rf.voteFor = -1 // Not on paper, but necessary. When all candidate vote for themselves, no leader will be elected.
 	}
 
-	rf.debug(VOTING, "Candidate up-to-date check:,%d ,%d, %+v", rf.lastLogIndex(), rf.lastLogTerm(), args)
 	if rf.lastLogTerm() > args.LastLogTerm || rf.lastLogTerm() == args.LastLogTerm && rf.lastLogIndex() > args.LastLogIndex {
 		rf.debug(VOTING, "Not grant vote because my log is more update to date last idx (%d), last term (%d) and request is %+v", rf.lastLogIndex(), rf.lastLogTerm(), args)
 		reply.VoteGranted = false
 		reply.Term = rf.currentTerm
 		return
 	}
-
-	if args.Term > term {
-		rf.debug(VOTING, "See a higher term from client %d, term is %d, my term is %d. Vote Grant!", args.CandidateId, args.Term, rf.currentTerm)
-		rf.voteFor = args.CandidateId
-		rf.electionTimeout = time.Now().Add(getElectionTimeout())
-
-		reply.VoteGranted = true
-		reply.Term = rf.currentTerm
-		rf.persist()
-		return
-	}
-
-	if rf.voteFor == args.CandidateId || rf.voteFor == -1 {
-		rf.debug(VOTING, "vote grant")
-		reply.VoteGranted = true
-		reply.Term = args.Term
-
-		rf.state = FOLLOWER
-		rf.voteFor = args.CandidateId
-		rf.electionTimeout = time.Now().Add(getElectionTimeout())
-		rf.persist()
-		return
-	} else {
+	if rf.voteFor != args.CandidateId && rf.voteFor != -1 {
 		rf.debug(VOTING, "Ask for Candidate %d,Already voted for %d", args.CandidateId, rf.voteFor)
+		reply.VoteGranted = false
+		reply.Term = rf.currentTerm
+		return
 	}
+
+	rf.debug(VOTING, "vote grant")
+	reply.VoteGranted = true
+	reply.Term = args.Term
+
+	rf.state = FOLLOWER
+	rf.voteFor = args.CandidateId
+	rf.electionTimeout = time.Now().Add(getElectionTimeout())
+	return
 }
 
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
-	//util.Println("%d received AppendEntries from %d for term %d, its term is %d", rf.me, args.LeaderId, args.Term, rf.currentTerm)
+	//rf.debugState()
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-
-	if args.LeaderId == rf.me {
-		return
-	}
+	defer rf.persist()
 
 	if rf.currentTerm > args.Term {
-		rf.debug(WARN, "Higher Term", args)
 		reply.Term = rf.currentTerm
 		reply.Success = false
 		return
+	} else if args.Term > rf.currentTerm {
+		rf.currentTerm = args.Term
+		rf.state = FOLLOWER
+		rf.voteFor = -1
 	}
 
-	if args.PrevLogIndex > rf.lastLogIndex() || args.PrevLogIndex < len(rf.log)+1 && args.PrevLogIndex > 0 && rf.log[args.PrevLogIndex-1].Term != args.PrevLogTerm {
-		rf.debug(WARN, "I can't append the entry because the previous log is different.)")
-		rf.debug(WARN, "Request: %+v", args)
+	// Raft server doesn't contain the previous log.
+	if args.PrevLogIndex > rf.lastLogIndex() {
+		rf.debugState()
 		reply.Term = rf.currentTerm
 		reply.Success = false
+		reply.ConflictIndex = max(1, rf.lastLogIndex())
 		return
 	}
 
-	rf.electionTimeout = time.Now().Add(getElectionTimeout())
+	// Raft contains the previous log, but with different term.
+	if args.PrevLogIndex <= rf.lastLogIndex() && args.PrevLogIndex > 0 && rf.logTermAt(args.PrevLogIndex) != args.PrevLogTerm {
+		rf.debugState()
+		reply.Term = rf.currentTerm
+		reply.Success = false
+		reply.ConflictTerm = rf.logTermAt(args.PrevLogIndex)
+		pos, _ := sort.Find(len(rf.log), func(i int) int {
+			return reply.ConflictTerm - rf.log[i].Term
+		})
+		reply.ConflictIndex = rf.log[pos].Index
+		return
+	}
 
 	// Server finds new leader.
-	if rf.state != FOLLOWER {
-		rf.debug(VOTING, "See a new leader")
-	}
 	rf.state = FOLLOWER
 	rf.currentTerm = args.Term
 	rf.voteFor = -1
@@ -182,10 +188,15 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		}
 		rf.debug(LOG_REPLICATING, "Appended a entry into log")
 	}
-	rf.persist()
-	if args.LeaderCommit > rf.commitIndex && len(rf.log) > 0 {
-		lastEntryIndex := lastEntry(&rf.log).Index
-		rf.commitIndex = min(lastEntryIndex, args.LeaderCommit)
+
+	rf.electionTimeout = time.Now().Add(getElectionTimeout())
+
+	if args.LeaderCommit > rf.commitIndex {
+		lastEntryIndex := args.LeaderCommit
+		if len(args.Entries) != 0 {
+			lastEntryIndex = min(lastEntry(&args.Entries).Index, lastEntryIndex)
+		}
+		rf.commitIndex = lastEntryIndex
 	}
 
 	reply.Term = rf.currentTerm

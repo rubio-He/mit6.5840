@@ -42,11 +42,12 @@ func (rf *Raft) debugState() {
 	pc, _, _, _ := runtime.Caller(1)
 	funcName := runtime.FuncForPC(pc).Name()
 	if STATE&DebugLevel != 0 {
-		str := fmt.Sprintf("Raft Log: %+v ", (*rf).log)
-		str += fmt.Sprintf("Current Term: %d ", (*rf).currentTerm)
+		str := fmt.Sprintf("Current Term: %d ", (*rf).currentTerm)
 		str += fmt.Sprintf("Peer next Index: %+v ", (*rf).nextIndex)
+		str += fmt.Sprintf("Peer Match Index: %+v ", (*rf).matchIndex)
 		str += fmt.Sprintf("Commit Idx: %d ", (*rf).commitIndex)
-		str += fmt.Sprintf("Last Applied: %d\n", (*rf).lastApplied)
+		str += fmt.Sprintf("Last Applied: %d", (*rf).lastApplied)
+		str += fmt.Sprintf("Raft Log: %+v\n", (*rf).log)
 		prefix := fmt.Sprintf("SEVER(%d): [%s]:", rf.me, funcName)
 		log.Printf(prefix + str)
 	}
@@ -81,7 +82,7 @@ func (rf *Raft) logAt(idx int) Log {
 
 func (rf *Raft) logTermAt(idx int) int {
 	if idx == 0 {
-		return InitialTerm
+		return 0
 	}
 	if idx > len(rf.log) || idx < 0 {
 		panic(fmt.Sprintf("Index out of boundary: %d, Slice length is %d", idx, len(rf.log)))
