@@ -138,7 +138,6 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	// Raft server doesn't contain the previous log.
 	if args.PrevLogIndex > rf.lastLogIndex() {
-		rf.debugState()
 		reply.Term = rf.currentTerm
 		reply.Success = false
 		reply.ConflictIndex = max(1, rf.lastLogIndex())
@@ -147,7 +146,6 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	// Raft contains the previous log, but with different term.
 	if args.PrevLogIndex <= rf.lastLogIndex() && args.PrevLogIndex > 0 && rf.logTermAt(args.PrevLogIndex) != args.PrevLogTerm {
-		rf.debugState()
 		reply.Term = rf.currentTerm
 		reply.Success = false
 		reply.ConflictTerm = rf.logTermAt(args.PrevLogIndex)
@@ -158,7 +156,6 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		return
 	}
 
-	// Server finds new leader.
 	rf.state = FOLLOWER
 	rf.currentTerm = args.Term
 	rf.voteFor = -1
@@ -181,10 +178,6 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 				}
 				rf.log = rf.log[:i]
 			}
-		} else {
-			rf.debug(WARN, "The LastEntryInRequest idx is illegal to append to the logs.")
-			rf.debug(WARN, "%+v", args)
-			rf.debug(WARN, "%+v", rf)
 		}
 		rf.debug(LOG_REPLICATING, "Appended a entry into log")
 	}

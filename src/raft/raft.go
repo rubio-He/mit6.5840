@@ -67,7 +67,7 @@ type Log struct {
 	Index   int
 }
 
-// A Go object implementing a single Raft peer.
+// Raft A Go object implementing a single Raft peer.
 type Raft struct {
 	mu        sync.Mutex          // Lock to protect shared access to this peer's state
 	peers     []*labrpc.ClientEnd // RPC end points of all peers
@@ -93,7 +93,6 @@ type Raft struct {
 
 	appendEntriesResultCh []chan AppendEntriesResult
 	leaderQuitCh          chan int
-	newEntriesCh          chan Log
 }
 
 // return currentTerm and whether this server
@@ -160,7 +159,6 @@ type AppendEntriesResult struct {
 	Success            bool
 	LastEntryInRequest Log
 	PrevLogIndex       int
-	PrevLogTerm        int
 	ConflictIndex      int
 	ConflictTerm       int
 }
@@ -302,7 +300,6 @@ func (rf *Raft) electionCounting(votes *int) {
 }
 
 func (rf *Raft) convertToLeader() {
-	rf.debug(EVENT|ELECTION, "Become a leader. term is %d", rf.currentTerm)
 	rf.state = LEADER
 	// Initialize the next indexes to last log index + 1.
 	// Initialize the match indexes to 0.
@@ -326,7 +323,7 @@ func (rf *Raft) heartbeat(i int, ticker *time.Ticker) {
 	for !rf.killed() {
 		select {
 		case <-ticker.C:
-			go rf.sendHeartbeat(i)
+			rf.sendHeartbeat(i)
 		case result := <-rf.appendEntriesResultCh[i]:
 			rf.handleAppendEntries(i, result)
 			rf.tryCommitEntry()
@@ -339,14 +336,6 @@ func (rf *Raft) heartbeat(i int, ticker *time.Ticker) {
 func (result *AppendEntriesResult) isEmptyLog() bool {
 	emptyLog := Log{}
 	return result.LastEntryInRequest == emptyLog
-}
-
-func (rf *Raft) updatePeerIndexes(i, logIndex int) {
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
-
-	rf.nextIndex[i] = max(rf.nextIndex[i], logIndex+1)
-	rf.matchIndex[i] = max(rf.matchIndex[i], logIndex)
 }
 
 func (rf *Raft) tryCommitEntry() {
@@ -385,9 +374,6 @@ func (rf *Raft) handleAppendEntries(i int, result AppendEntriesResult) {
 			rf.nextIndex[i] = rf.log[pos].Index
 		} else {
 			rf.nextIndex[i] = max(1, result.ConflictIndex)
-		}
-		if rf.nextIndex[i] == result.PrevLogIndex+1 && rf.nextIndex[i] != 1 {
-			rf.nextIndex[i] -= 1
 		}
 	}
 
@@ -437,17 +423,17 @@ func (rf *Raft) replicateLog(i int, prevLogIndex int, prevLogTerm int, entries [
 	}
 
 	result := AppendEntriesResult{
-		Success:            reply.Success,
-		LastEntryInRequest: entries[len(entries)-1],
-		PrevLogIndex:       prevLogIndex,
-		PrevLogTerm:        prevLogTerm,
+		Success:      reply.Success,
+		PrevLogIndex: prevLogIndex,
 	}
 
+	if len(entries) > 0 {
+		result.LastEntryInRequest = entries[len(entries)-1]
+	}
 	if !reply.Success {
 		result.ConflictTerm = reply.ConflictTerm
 		result.ConflictIndex = reply.ConflictIndex
 	}
-
 	rf.appendEntriesResultCh[i] <- result
 }
 
@@ -466,50 +452,9 @@ func (rf *Raft) sendHeartbeat(i int) {
 	if len(rf.log) >= peerNextIdx {
 		entries = rf.log[peerNextIdx-1 : peerNextIdx]
 	}
-
-	args := AppendEntriesArgs{
-		Term:         rf.currentTerm,
-		LeaderId:     rf.me,
-		PrevLogIndex: prevIdx,
-		PrevLogTerm:  prevTerm,
-		Entries:      entries,
-		LeaderCommit: rf.commitIndex,
-	}
 	rf.mu.Unlock()
 
-	reply := AppendEntriesReply{}
-	ok := rf.sendAppendEntries(i, &args, &reply)
-	if !ok || !rf.isLeader() {
-		rf.debug(WARN, "Failed send heartbeat")
-		return
-	}
-
-	if !reply.Success && rf.receiveHigherTerm(reply.Term) {
-		close(rf.leaderQuitCh)
-		return
-	}
-
-	if !rf.isLeader() {
-		return
-	}
-	//rf.debug(STATE, "%d, %+v, %d", i, reply, rf.currentTerm)
-
-	result := AppendEntriesResult{
-		Success:      reply.Success,
-		PrevLogIndex: prevIdx,
-		PrevLogTerm:  prevTerm,
-	}
-
-	if rf.lastLogIndex() >= peerNextIdx {
-		result.LastEntryInRequest = rf.logAt(peerNextIdx)
-	}
-
-	if !reply.Success {
-		result.ConflictTerm = reply.ConflictTerm
-		result.ConflictIndex = reply.ConflictIndex
-	}
-
-	rf.appendEntriesResultCh[i] <- result
+	go rf.replicateLog(i, prevIdx, prevTerm, entries)
 }
 
 func (rf *Raft) receiveHigherTerm(term int) bool {
@@ -567,7 +512,6 @@ func Make(peers []*labrpc.ClientEnd, me int,
 		rf.appendEntriesResultCh[i] = make(chan AppendEntriesResult)
 	}
 	rf.leaderQuitCh = make(chan int)
-	rf.newEntriesCh = make(chan Log)
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
