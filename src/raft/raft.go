@@ -323,7 +323,7 @@ func (rf *Raft) heartbeat(i int, ticker *time.Ticker) {
 	for !rf.killed() {
 		select {
 		case <-ticker.C:
-			rf.sendHeartbeat(i)
+			go rf.sendHeartbeat(i)
 		case result := <-rf.appendEntriesResultCh[i]:
 			rf.handleAppendEntries(i, result)
 			rf.tryCommitEntry()
@@ -453,8 +453,7 @@ func (rf *Raft) sendHeartbeat(i int) {
 		entries = rf.log[peerNextIdx-1 : peerNextIdx]
 	}
 	rf.mu.Unlock()
-
-	go rf.replicateLog(i, prevIdx, prevTerm, entries)
+	rf.replicateLog(i, prevIdx, prevTerm, entries)
 }
 
 func (rf *Raft) receiveHigherTerm(term int) bool {
