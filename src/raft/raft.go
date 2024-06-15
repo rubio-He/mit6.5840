@@ -244,7 +244,7 @@ func (rf *Raft) ticker() {
 			lastLogTerm := rf.lastLogTerm()
 			rf.persist()
 			rf.mu.Unlock()
-			rf.debug(VOTING, "Start voting my term is %d", rf.currentTerm)
+			rf.debug(STATE, "Start voting my term is %d", rf.currentTerm)
 			for idx := range rf.peers {
 				if idx == rf.me {
 					continue
@@ -342,7 +342,9 @@ func (rf *Raft) heartbeat(i int, ticker *time.Ticker) {
 		select {
 		case result := <-rf.appendEntriesResultCh[i]:
 			rf.handleAppendEntries(i, result)
-			rf.tryCommitEntry()
+			if result.Success {
+				rf.tryCommitEntry()
+			}
 		case <-ticker.C:
 			go rf.sendHeartbeat(i)
 		}
@@ -397,7 +399,7 @@ func (rf *Raft) handleAppendEntries(i int, result AppendEntriesResult) {
 	var entries []Log
 	if result.Success {
 		if rf.nextIndex[i]-1 < len(rf.log) {
-			entries = rf.log[rf.nextIndex[i]-1 : min(rf.nextIndex[i]+20, len(rf.log))]
+			entries = rf.log[rf.nextIndex[i]-1 : min(rf.nextIndex[i]+40, len(rf.log))]
 		}
 	} else {
 		entries = rf.log[rf.nextIndex[i]-1 : rf.nextIndex[i]]
@@ -434,7 +436,7 @@ func (rf *Raft) replicateLog(i int, prevLogIndex int, prevLogTerm int, entries [
 	if !ok || !rf.isLeader() {
 		return
 	}
-	if rf.receiveHigherTerm(i, reply.Term) {
+	if rf.receiveHigherTerm(-1, reply.Term) {
 		return
 	}
 	if !rf.isLeader() {
@@ -482,7 +484,7 @@ func (rf *Raft) receiveHigherTerm(i int, term int) bool {
 	if rf.currentTerm >= term {
 		return false
 	} else {
-		rf.debug(WARN, "Receive higher term %d, not a leader now.", term)
+		rf.debug(STATE, "Receive higher term %d, not a leader now.", term)
 		rf.currentTerm = term
 		rf.state = FOLLOWER
 		rf.electionTimeout = time.Now().Add(getElectionTimeout())

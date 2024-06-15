@@ -10,7 +10,7 @@ import (
 
 // Debugging
 
-const DebugLevel = STATE | ELECTION
+const DebugLevel = STATE
 
 type Topic int
 
@@ -34,6 +34,7 @@ func (rf *Raft) debug(dLvl Topic, str string, a ...any) {
 	if dLvl&DebugLevel != 0 {
 		str = str + "\n"
 		prefix := fmt.Sprintf("SEVER(%d): [%s]: ", rf.me, funcName)
+		log.SetPrefix(time.Now().String())
 		log.Printf(prefix+str, a...)
 	}
 }
@@ -129,6 +130,6 @@ func (rf *Raft) isCandidate() bool {
 // return a random amount of time between 50 and 350
 // milliseconds.
 func getElectionTimeout() time.Duration {
-	ms := 50 + (rand.Int63() % 300)
+	ms := 100 + (rand.Int63() % 300)
 	return time.Duration(ms) * time.Millisecond
 }
