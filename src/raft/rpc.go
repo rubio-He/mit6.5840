@@ -38,8 +38,22 @@ type AppendEntriesReply struct {
 	ConflictTerm  int
 }
 
+type InstallSnapshotArgs struct {
+	Term              int
+	LeaderId          int
+	LastIncludedIndex int
+	LastIncludedTerm  int
+	Offset            int
+	Data              []byte
+	Done              bool
+}
+
+type InstallSnapshotReply struct {
+	Term int
+}
+
 func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
-	rf.debug(RPC, "Send AppendEntries to CLIENT(%d)", server)
+	rf.debug(RPC, "time: %s AppendEntries CLIENT(%d)", time.Now().String(), server)
 	ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)
 	return ok
 }
@@ -72,7 +86,7 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 // that the caller passes the address of the reply struct with &, not
 // the struct itself.
 func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
-	rf.debug(RPC, "Send Request Vote to CLIENT(%d)", server)
+	rf.debug(RPC, "time: %s Send Request Vote to CLIENT(%d)", time.Now().String(), server)
 	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
 	return ok
 }
@@ -82,10 +96,6 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	defer rf.mu.Unlock()
 	defer rf.persist()
 
-	if args.CandidateId == rf.me {
-		return
-	}
-
 	// Not grant vote if voter's Term is greater than the candidate.
 	if args.Term < rf.currentTerm {
 		reply.VoteGranted = false
@@ -94,7 +104,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	} else if args.Term > rf.currentTerm {
 		rf.currentTerm = args.Term
 		rf.state = FOLLOWER
-		rf.voteFor = -1 // Not on paper, but necessary. When all candidate vote for themselves, no leader will be elected.
+		rf.voteFor = args.CandidateId
 	}
 
 	if rf.lastLogTerm() > args.LastLogTerm || rf.lastLogTerm() == args.LastLogTerm && rf.lastLogIndex() > args.LastLogIndex {
@@ -133,7 +143,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	} else if args.Term > rf.currentTerm {
 		rf.currentTerm = args.Term
 		rf.state = FOLLOWER
-		rf.voteFor = -1
+		rf.voteFor = args.LeaderId
 	}
 
 	// Raft server doesn't contain the previous log.
@@ -158,7 +168,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	rf.state = FOLLOWER
 	rf.currentTerm = args.Term
-	rf.voteFor = -1
+	rf.voteFor = args.LeaderId
 
 	rf.debug(INFO, "Receive entry %+v", args.Entries)
 	for _, entry := range args.Entries {
@@ -194,4 +204,23 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	reply.Term = rf.currentTerm
 	reply.Success = true
+}
+
+func (rf *Raft) InstallSnapShot(args *InstallSnapshotArgs, reply *InstallSnapshotReply) {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	if args.Term < rf.currentTerm {
+		reply.Term = rf.currentTerm
+		return
+	} else {
+		rf.currentTerm = args.Term
+	}
+
+	// Follower transition and timeout reset.
+	rf.state = FOLLOWER
+	rf.currentTerm = args.Term
+	rf.voteFor = -1
+	rf.electionTimeout = time.Now().Add(getElectionTimeout())
+
 }

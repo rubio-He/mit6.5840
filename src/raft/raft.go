@@ -91,8 +91,10 @@ type Raft struct {
 
 	applyCh chan ApplyMsg
 
+	lastIncludeIndex int
+	lastIncludeTerm  int
+
 	appendEntriesResultCh []chan AppendEntriesResult
-	leaderQuitCh          chan int
 }
 
 // return currentTerm and whether this server
@@ -119,6 +121,8 @@ func (rf *Raft) persist() {
 	e.Encode(rf.currentTerm)
 	e.Encode(rf.log)
 	e.Encode(rf.voteFor)
+	e.Encode(rf.lastIncludeIndex)
+	e.Encode(rf.lastIncludeTerm)
 	state := w.Bytes()
 	rf.persister.Save(state, nil)
 }
@@ -133,9 +137,13 @@ func (rf *Raft) readPersist(data []byte) {
 	var currentTerm int
 	var log []Log
 	var voteFor int
+	var lastIncludeIndex int
+	var lastIncludeTerm int
 	if d.Decode(&currentTerm) != nil ||
 		d.Decode(&log) != nil ||
-		d.Decode(&voteFor) != nil {
+		d.Decode(&voteFor) != nil ||
+		d.Decode(&lastIncludeIndex) != nil ||
+		d.Decode(&lastIncludeTerm) != nil {
 		rf.debug(PERSIST, "Decode Error")
 	} else {
 		rf.mu.Lock()
@@ -143,6 +151,8 @@ func (rf *Raft) readPersist(data []byte) {
 		rf.currentTerm = currentTerm
 		rf.log = log
 		rf.voteFor = voteFor
+		rf.lastIncludeIndex = lastIncludeIndex
+		rf.lastIncludeTerm = lastIncludeTerm
 		rf.debug(PERSIST, "Restore success")
 	}
 }
@@ -152,7 +162,13 @@ func (rf *Raft) readPersist(data []byte) {
 // service no longer needs the log through (and including)
 // that index. Raft should now trim its log as much as possible.
 func (rf *Raft) Snapshot(index int, snapshot []byte) {
-	// Your code here (2D).
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	if index < rf.lastIncludeIndex {
+		return
+	}
+
 }
 
 type AppendEntriesResult struct {
@@ -182,10 +198,9 @@ func (rf *Raft) Start(cmd interface{}) (int, int, bool) {
 	term := rf.currentTerm
 	isLeader := rf.state == LEADER
 	if !isLeader {
-		rf.debug(WARN, "Not a leader for cmd %d", cmd)
 		return index, term, isLeader
 	}
-	rf.debug(WARN, "A leader receive for cmd %d", cmd)
+	//rf.debug(STATE, "A leader receive for cmd %d", cmd)
 	newEntry := Log{cmd, rf.currentTerm, len(rf.log) + 1}
 	rf.log = append(rf.log, newEntry)
 	rf.persist()
@@ -243,7 +258,7 @@ func (rf *Raft) ticker() {
 					reply := RequestVoteReply{}
 					ok := rf.sendRequestVote(i, &args, &reply)
 
-					if !rf.isCandidate() || ok && rf.receiveHigherTerm(reply.Term) {
+					if !rf.isCandidate() || ok && rf.receiveHigherTerm(i, reply.Term) {
 						return
 					}
 
@@ -300,6 +315,7 @@ func (rf *Raft) electionCounting(votes *int) {
 }
 
 func (rf *Raft) convertToLeader() {
+	//rf.debug(STATE, "become leader, cur term %d", rf.currentTerm)
 	rf.state = LEADER
 	// Initialize the next indexes to last log index + 1.
 	// Initialize the match indexes to 0.
@@ -307,28 +323,27 @@ func (rf *Raft) convertToLeader() {
 		rf.nextIndex[i] = rf.lastLogIndex() + 1
 		rf.matchIndex[i] = 0
 	}
-	// Clean the leader quit channel.
-	rf.leaderQuitCh = make(chan int)
 
 	for i := range rf.peers {
 		if i == rf.me {
 			continue
 		}
-		ticker := time.NewTicker(50 * time.Millisecond)
+		ticker := time.NewTicker(35 * time.Millisecond)
 		go rf.heartbeat(i, ticker)
 	}
 }
 
 func (rf *Raft) heartbeat(i int, ticker *time.Ticker) {
 	for !rf.killed() {
+		if !rf.isLeader() {
+			break
+		}
 		select {
-		case <-ticker.C:
-			go rf.sendHeartbeat(i)
 		case result := <-rf.appendEntriesResultCh[i]:
 			rf.handleAppendEntries(i, result)
 			rf.tryCommitEntry()
-		case <-rf.leaderQuitCh:
-			return
+		case <-ticker.C:
+			go rf.sendHeartbeat(i)
 		}
 	}
 }
@@ -339,14 +354,15 @@ func (result *AppendEntriesResult) isEmptyLog() bool {
 }
 
 func (rf *Raft) tryCommitEntry() {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
 	matchedIndex := make([]int, len(rf.matchIndex))
 	copy(matchedIndex, rf.matchIndex)
 	slices.Sort(matchedIndex)
 	majorityCnt := len(matchedIndex)/2 + 1
 	majorityMatchedIndex := matchedIndex[majorityCnt]
 	// Leader will commit the entry if it finds the majority of followers have appended the entries.
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
 	// Only commit to this log if this log is from its current Term.
 	if rf.logTermAt(majorityMatchedIndex) == rf.currentTerm {
 		rf.commitIndex = max(rf.commitIndex, majorityMatchedIndex)
@@ -386,6 +402,9 @@ func (rf *Raft) handleAppendEntries(i int, result AppendEntriesResult) {
 		entries = rf.log[rf.nextIndex[i]-1 : rf.nextIndex[i]]
 	}
 
+	rf.debugState()
+	rf.debug(STATE, "%d, %+v", i, result)
+
 	// update match index if success.
 	if result.Success {
 		rf.matchIndex[i] = max(rf.matchIndex[i], result.PrevLogIndex)
@@ -414,8 +433,7 @@ func (rf *Raft) replicateLog(i int, prevLogIndex int, prevLogTerm int, entries [
 	if !ok || !rf.isLeader() {
 		return
 	}
-	if rf.receiveHigherTerm(reply.Term) {
-		close(rf.leaderQuitCh)
+	if rf.receiveHigherTerm(i, reply.Term) {
 		return
 	}
 	if !rf.isLeader() {
@@ -456,7 +474,7 @@ func (rf *Raft) sendHeartbeat(i int) {
 	rf.replicateLog(i, prevIdx, prevTerm, entries)
 }
 
-func (rf *Raft) receiveHigherTerm(term int) bool {
+func (rf *Raft) receiveHigherTerm(i int, term int) bool {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
@@ -468,7 +486,7 @@ func (rf *Raft) receiveHigherTerm(term int) bool {
 		rf.state = FOLLOWER
 		rf.electionTimeout = time.Now().Add(getElectionTimeout())
 		rf.debug(WARN, "current time  is %s", time.Now())
-		rf.voteFor = -1
+		rf.voteFor = i
 		rf.persist()
 		return true
 	}
@@ -496,6 +514,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.voteFor = -1
 	rf.commitIndex = 0
 	rf.lastApplied = 0
+	rf.lastIncludeIndex = 0
+	rf.lastIncludeTerm = 0
 	rf.nextIndex = make([]int, len(peers))
 	for i := range rf.nextIndex {
 		rf.nextIndex[i] = 1
@@ -510,7 +530,6 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	for i := range peers {
 		rf.appendEntriesResultCh[i] = make(chan AppendEntriesResult)
 	}
-	rf.leaderQuitCh = make(chan int)
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
