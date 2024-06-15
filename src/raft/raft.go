@@ -95,6 +95,7 @@ type Raft struct {
 	lastIncludeTerm  int
 
 	appendEntriesResultCh []chan AppendEntriesResult
+	leaderQuitCh          chan int
 }
 
 // return currentTerm and whether this server
