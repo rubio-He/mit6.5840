@@ -93,9 +93,9 @@ type Raft struct {
 
 	lastIncludeIndex int
 	lastIncludeTerm  int
+	snapshot         []byte
 
 	appendEntriesResultCh []chan AppendEntriesResult
-	leaderQuitCh          chan int
 }
 
 // return currentTerm and whether this server
@@ -125,7 +125,7 @@ func (rf *Raft) persist() {
 	e.Encode(rf.lastIncludeIndex)
 	e.Encode(rf.lastIncludeTerm)
 	state := w.Bytes()
-	rf.persister.Save(state, nil)
+	rf.persister.Save(state, rf.snapshot)
 }
 
 // restore previously persisted state.
@@ -158,18 +158,23 @@ func (rf *Raft) readPersist(data []byte) {
 	}
 }
 
+// Snapshot
 // the service says it has created a snapshot that has
 // all info up to and including index. this means the
 // service no longer needs the log through (and including)
 // that index. Raft should now trim its log as much as possible.
 func (rf *Raft) Snapshot(index int, snapshot []byte) {
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
-
+	rf.debug(SNAPSHOT, "Snapshot at %d", index)
 	if index < rf.lastIncludeIndex {
 		return
 	}
-
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	rf.snapshot = snapshot
+	rf.lastIncludeTerm = rf.logTermAt(index)
+	rf.log = rf.log[index-rf.lastIncludeIndex:]
+	rf.lastIncludeIndex = index
+	rf.persist()
 }
 
 type AppendEntriesResult struct {
@@ -195,14 +200,14 @@ type AppendEntriesResult struct {
 func (rf *Raft) Start(cmd interface{}) (int, int, bool) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	index := len(rf.log) + 1
+	index := len(rf.log) + 1 + rf.lastIncludeIndex
 	term := rf.currentTerm
 	isLeader := rf.state == LEADER
 	if !isLeader {
 		return index, term, isLeader
 	}
 	//rf.debug(STATE, "A leader receive for cmd %d", cmd)
-	newEntry := Log{cmd, rf.currentTerm, len(rf.log) + 1}
+	newEntry := Log{cmd, rf.currentTerm, index}
 	rf.log = append(rf.log, newEntry)
 	rf.persist()
 
@@ -258,7 +263,7 @@ func (rf *Raft) ticker() {
 					}
 					reply := RequestVoteReply{}
 					ok := rf.sendRequestVote(i, &args, &reply)
-
+					rf.debug(VOTING, "%+v", reply)
 					if !rf.isCandidate() || ok && rf.receiveHigherTerm(i, reply.Term) {
 						return
 					}
@@ -275,23 +280,23 @@ func (rf *Raft) ticker() {
 }
 
 func (rf *Raft) applier() {
-	ticker := time.NewTicker(10 * time.Millisecond)
+	ticker := time.NewTicker(50 * time.Millisecond)
 	for !rf.killed() {
 		select {
 		case <-ticker.C:
-			rf.mu.Lock()
-			for rf.commitIndex > rf.lastApplied && rf.lastApplied < len(rf.log) {
-				toBeAppliedEntry := rf.log[rf.lastApplied]
+			for rf.commitIndex > rf.lastApplied && rf.lastApplied-rf.lastIncludeIndex < len(rf.log) {
+				rf.mu.Lock()
+				toBeAppliedEntry := rf.log[rf.lastApplied-rf.lastIncludeIndex]
 				msg := ApplyMsg{
 					CommandValid: true,
 					Command:      toBeAppliedEntry.Command,
 					CommandIndex: toBeAppliedEntry.Index,
 				}
-				rf.applyCh <- msg
 				rf.lastApplied = toBeAppliedEntry.Index
+				rf.mu.Unlock()
+				rf.applyCh <- msg
 				rf.debug(APPLY, "Applied Message of %+v", msg)
 			}
-			rf.mu.Unlock()
 		}
 	}
 }
@@ -321,7 +326,7 @@ func (rf *Raft) convertToLeader() {
 	// Initialize the next indexes to last log index + 1.
 	// Initialize the match indexes to 0.
 	for i := range rf.peers {
-		rf.nextIndex[i] = rf.lastLogIndex() + 1
+		rf.nextIndex[i] = len(rf.log) + rf.lastIncludeIndex + 1
 		rf.matchIndex[i] = 0
 	}
 
@@ -398,11 +403,9 @@ func (rf *Raft) handleAppendEntries(i int, result AppendEntriesResult) {
 
 	var entries []Log
 	if result.Success {
-		if rf.nextIndex[i]-1 < len(rf.log) {
-			entries = rf.log[rf.nextIndex[i]-1 : min(rf.nextIndex[i]+40, len(rf.log))]
+		if rf.nextIndex[i]-1-rf.lastIncludeIndex < len(rf.log) {
+			entries = rf.log[rf.nextIndex[i]-1-rf.lastIncludeIndex : min(rf.nextIndex[i]-rf.lastIncludeIndex+40, len(rf.log))]
 		}
-	} else {
-		entries = rf.log[rf.nextIndex[i]-1 : rf.nextIndex[i]]
 	}
 
 	rf.debugState()
@@ -470,8 +473,8 @@ func (rf *Raft) sendHeartbeat(i int) {
 	prevTerm := rf.logTermAt(prevIdx)
 
 	var entries []Log
-	if len(rf.log) >= peerNextIdx {
-		entries = rf.log[peerNextIdx-1 : peerNextIdx]
+	if len(rf.log) >= peerNextIdx-rf.lastIncludeIndex {
+		entries = rf.log[peerNextIdx-1-rf.lastIncludeIndex : peerNextIdx-rf.lastIncludeIndex]
 	}
 	rf.mu.Unlock()
 	rf.replicateLog(i, prevIdx, prevTerm, entries)
@@ -533,9 +536,17 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	for i := range peers {
 		rf.appendEntriesResultCh[i] = make(chan AppendEntriesResult)
 	}
-
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
+	if rf.persister.SnapshotSize() > 0 {
+		rf.snapshot = persister.ReadSnapshot()
+		rf.applyCh <- ApplyMsg{
+			SnapshotValid: true,
+			Snapshot:      rf.snapshot,
+			SnapshotTerm:  rf.lastIncludeTerm,
+			SnapshotIndex: rf.lastIncludeIndex,
+		}
+	}
 
 	// Start ticker goroutine to start elections
 	go rf.ticker()

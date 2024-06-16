@@ -95,6 +95,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	defer rf.persist()
+	rf.debug(VOTING, "time: %s RequestVote(%d) to %d", time.Now().String(), args.Term, args.CandidateId)
 
 	// Not grant vote if voter's Term is greater than the candidate.
 	if args.Term < rf.currentTerm {
@@ -108,13 +109,13 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	}
 
 	if rf.lastLogTerm() > args.LastLogTerm || rf.lastLogTerm() == args.LastLogTerm && rf.lastLogIndex() > args.LastLogIndex {
-		rf.debug(VOTING, "Not grant vote because my log is more update to date last idx (%d), last term (%d) and request is %+v", rf.lastLogIndex(), rf.lastLogTerm(), args)
+		rf.debug(STATE, "Not grant vote because my log is more update to date last idx (%d), last term (%d) and request is %+v", rf.lastLogIndex(), rf.lastLogTerm(), args)
 		reply.VoteGranted = false
 		reply.Term = rf.currentTerm
 		return
 	}
 	if rf.voteFor != args.CandidateId && rf.voteFor != -1 {
-		rf.debug(VOTING, "Ask for Candidate %d,Already voted for %d", args.CandidateId, rf.voteFor)
+		rf.debug(STATE, "Ask for Candidate %d,Already voted for %d", args.CandidateId, rf.voteFor)
 		reply.VoteGranted = false
 		reply.Term = rf.currentTerm
 		return
@@ -148,6 +149,8 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	// Raft server doesn't contain the previous log.
 	if args.PrevLogIndex > rf.lastLogIndex() {
+		rf.debugState()
+		rf.debug(STATE, "%+v", args)
 		reply.Term = rf.currentTerm
 		reply.Success = false
 		reply.ConflictIndex = max(1, rf.lastLogIndex())
@@ -156,6 +159,8 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	// Raft contains the previous log, but with different term.
 	if args.PrevLogIndex <= rf.lastLogIndex() && args.PrevLogIndex > 0 && rf.logTermAt(args.PrevLogIndex) != args.PrevLogTerm {
+		rf.debugState()
+		rf.debug(STATE, "%+v", args)
 		reply.Term = rf.currentTerm
 		reply.Success = false
 		reply.ConflictTerm = rf.logTermAt(args.PrevLogIndex)
@@ -172,8 +177,10 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	rf.debug(INFO, "Receive entry %+v", args.Entries)
 	for _, entry := range args.Entries {
-		i := entry.Index
+		i := entry.Index - rf.lastIncludeIndex
 		if i == len(rf.log)+1 {
+			rf.debug(STATE, "Appended a entry into log")
+			rf.debugState()
 			rf.log = append(rf.log, Log{
 				Command: entry.Command,
 				Term:    entry.Term,
@@ -188,8 +195,9 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 				}
 				rf.log = rf.log[:i]
 			}
+		} else {
+			rf.debug(WARN, "WRONG")
 		}
-		rf.debug(LOG_REPLICATING, "Appended a entry into log")
 	}
 
 	rf.electionTimeout = time.Now().Add(getElectionTimeout())

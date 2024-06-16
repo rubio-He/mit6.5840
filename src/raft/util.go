@@ -10,7 +10,7 @@ import (
 
 // Debugging
 
-const DebugLevel = STATE
+const DebugLevel = VOTING | SNAPSHOT | STATE | PERSIST | APPLY
 
 type Topic int
 
@@ -26,6 +26,7 @@ const (
 	APPLY           Topic = 0b1000000000
 	PERSIST         Topic = 0b10000000000
 	ELECTION        Topic = 0b100000000000
+	SNAPSHOT        Topic = 0b1000000000000
 )
 
 func (rf *Raft) debug(dLvl Topic, str string, a ...any) {
@@ -34,7 +35,6 @@ func (rf *Raft) debug(dLvl Topic, str string, a ...any) {
 	if dLvl&DebugLevel != 0 {
 		str = str + "\n"
 		prefix := fmt.Sprintf("SEVER(%d): [%s]: ", rf.me, funcName)
-		log.SetPrefix(time.Now().String())
 		log.Printf(prefix+str, a...)
 	}
 }
@@ -56,7 +56,7 @@ func (rf *Raft) debugState() {
 
 func (rf *Raft) lastLogIndex() int {
 	if len(rf.log) == 0 {
-		return 0
+		return rf.lastIncludeIndex
 	}
 
 	return rf.log[len(rf.log)-1].Index
@@ -64,35 +64,32 @@ func (rf *Raft) lastLogIndex() int {
 
 func (rf *Raft) lastLogTerm() int {
 	if len(rf.log) == 0 {
-		return 0
+		return rf.lastIncludeTerm
 	}
 	return rf.log[len(rf.log)-1].Term
 }
 
+func lastEntry(log *[]Log) *Log {
+	return &(*log)[len(*log)-1]
+}
+
 func (rf *Raft) logAt(idx int) Log {
-	if idx == 0 {
-		panic("No LastEntryInRequest at idx 0")
+	arrayIdx := idx - rf.lastIncludeIndex - 1
+	if arrayIdx >= len(rf.log) || arrayIdx < 0 {
+		panic(fmt.Sprintf("Index out of boundary: %d, Slice length is %d", arrayIdx, len(rf.log)))
 	}
-
-	if idx > len(rf.log) || idx < 0 {
-		panic(fmt.Sprintf("Index out of boundary: %d, Slice length is %d", idx, len(rf.log)))
-	}
-
-	return rf.log[idx-1]
+	return rf.log[arrayIdx]
 }
 
 func (rf *Raft) logTermAt(idx int) int {
-	if idx == 0 {
-		return 0
+	arrayIdx := idx - rf.lastIncludeIndex - 1
+	if idx-rf.lastIncludeIndex == 0 {
+		return rf.lastIncludeTerm
 	}
-	if idx > len(rf.log) || idx < 0 {
+	if arrayIdx >= len(rf.log) || arrayIdx < 0 {
 		panic(fmt.Sprintf("Index out of boundary: %d, Slice length is %d", idx, len(rf.log)))
 	}
-	return (rf.log)[idx-1].Term
-}
-
-func lastEntry(log *[]Log) *Log {
-	return &(*log)[len(*log)-1]
+	return (rf.log)[arrayIdx].Term
 }
 
 func max(a, b int) int {
