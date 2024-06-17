@@ -10,7 +10,7 @@ import (
 
 // Debugging
 
-const DebugLevel = VOTING | SNAPSHOT | STATE | PERSIST | APPLY
+const DebugLevel = 0
 
 type Topic int
 
@@ -44,6 +44,7 @@ func (rf *Raft) debugState() {
 	funcName := runtime.FuncForPC(pc).Name()
 	if STATE&DebugLevel != 0 {
 		str := fmt.Sprintf("Current Term: %d ", (*rf).currentTerm)
+		str += fmt.Sprintf("last include Idx : %d ", (*rf).lastIncludeIndex)
 		str += fmt.Sprintf("Peer next Index: %+v ", (*rf).nextIndex)
 		str += fmt.Sprintf("Peer Match Index: %+v ", (*rf).matchIndex)
 		str += fmt.Sprintf("Commit Idx: %d ", (*rf).commitIndex)
