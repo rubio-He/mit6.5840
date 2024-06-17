@@ -43,9 +43,9 @@ type InstallSnapshotArgs struct {
 	LeaderId          int
 	LastIncludedIndex int
 	LastIncludedTerm  int
-	Offset            int
-	Data              []byte
-	Done              bool
+	//Offset            int
+	Data []byte
+	//Done              bool
 }
 
 type InstallSnapshotReply struct {
@@ -88,6 +88,12 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
 	rf.debug(RPC, "time: %s Send Request Vote to CLIENT(%d)", time.Now().String(), server)
 	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
+	return ok
+}
+
+func (rf *Raft) sendInstallSnapshot(server int, args *InstallSnapshotArgs, reply *InstallSnapshotReply) bool {
+	rf.debug(RPC, "time: %s Send Install Snapshot to CLIENT(%d)", time.Now().String(), server)
+	ok := rf.peers[server].Call("Raft.InstallSnapShot", args, reply)
 	return ok
 }
 
@@ -150,17 +156,17 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	// Raft server doesn't contain the previous log.
 	if args.PrevLogIndex > rf.lastLogIndex() {
 		rf.debugState()
-		rf.debug(STATE, "%+v", args)
+		rf.debug(STATE, "doesn't contain the previous log. %+v", args)
 		reply.Term = rf.currentTerm
 		reply.Success = false
-		reply.ConflictIndex = max(1, rf.lastLogIndex())
+		reply.ConflictIndex = max(rf.lastIncludeIndex+1, rf.lastLogIndex())
 		return
 	}
 
 	// Raft contains the previous log, but with different term.
 	if args.PrevLogIndex <= rf.lastLogIndex() && args.PrevLogIndex > 0 && rf.logTermAt(args.PrevLogIndex) != args.PrevLogTerm {
 		rf.debugState()
-		rf.debug(STATE, "%+v", args)
+		rf.debug(STATE, "with different term, %+v", args)
 		reply.Term = rf.currentTerm
 		reply.Success = false
 		reply.ConflictTerm = rf.logTermAt(args.PrevLogIndex)
@@ -179,7 +185,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	for _, entry := range args.Entries {
 		i := entry.Index - rf.lastIncludeIndex
 		if i == len(rf.log)+1 {
-			rf.debug(STATE, "Appended a entry into log")
+			rf.debug(STATE, "Appended a entry into log %+v", entry)
 			rf.debugState()
 			rf.log = append(rf.log, Log{
 				Command: entry.Command,
@@ -217,12 +223,19 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 func (rf *Raft) InstallSnapShot(args *InstallSnapshotArgs, reply *InstallSnapshotReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
+	defer rf.persist()
 
 	if args.Term < rf.currentTerm {
 		reply.Term = rf.currentTerm
 		return
 	} else {
 		rf.currentTerm = args.Term
+		rf.voteFor = args.LeaderId
+		rf.state = FOLLOWER
+	}
+
+	if rf.lastIncludeIndex >= args.LastIncludedIndex {
+		return
 	}
 
 	// Follower transition and timeout reset.
@@ -231,4 +244,23 @@ func (rf *Raft) InstallSnapShot(args *InstallSnapshotArgs, reply *InstallSnapsho
 	rf.voteFor = -1
 	rf.electionTimeout = time.Now().Add(getElectionTimeout())
 
+	rf.snapshot = args.Data
+	pos, found := sort.Find(len(rf.log), func(i int) int {
+		return args.LastIncludedIndex - rf.log[i].Index
+	})
+	if found {
+		rf.log = rf.log[pos+1:]
+	} else {
+		rf.log = []Log{}
+	}
+	rf.lastIncludeTerm = args.LastIncludedTerm
+	rf.lastIncludeIndex = args.LastIncludedIndex
+	rf.lastApplied = rf.lastIncludeIndex
+	rf.commitIndex = max(rf.commitIndex, rf.lastIncludeIndex)
+	rf.applyCh <- ApplyMsg{
+		SnapshotValid: true,
+		Snapshot:      rf.snapshot,
+		SnapshotTerm:  args.LastIncludedTerm,
+		SnapshotIndex: rf.lastIncludeIndex,
+	}
 }

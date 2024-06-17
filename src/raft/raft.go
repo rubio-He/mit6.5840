@@ -286,6 +286,7 @@ func (rf *Raft) applier() {
 		case <-ticker.C:
 			for rf.commitIndex > rf.lastApplied && rf.lastApplied-rf.lastIncludeIndex < len(rf.log) {
 				rf.mu.Lock()
+				rf.debug(APPLY, "Apply message at %d", rf.lastApplied+1)
 				toBeAppliedEntry := rf.log[rf.lastApplied-rf.lastIncludeIndex]
 				msg := ApplyMsg{
 					CommandValid: true,
@@ -334,12 +335,13 @@ func (rf *Raft) convertToLeader() {
 		if i == rf.me {
 			continue
 		}
-		ticker := time.NewTicker(35 * time.Millisecond)
-		go rf.heartbeat(i, ticker)
+		go rf.heartbeat(i)
 	}
 }
 
-func (rf *Raft) heartbeat(i int, ticker *time.Ticker) {
+func (rf *Raft) heartbeat(i int) {
+	heartBeatTicker := time.NewTicker(35 * time.Millisecond)
+	snapshotTicker := time.NewTicker(50 * time.Millisecond)
 	for !rf.killed() {
 		if !rf.isLeader() {
 			break
@@ -350,8 +352,16 @@ func (rf *Raft) heartbeat(i int, ticker *time.Ticker) {
 			if result.Success {
 				rf.tryCommitEntry()
 			}
-		case <-ticker.C:
+		case <-heartBeatTicker.C:
 			go rf.sendHeartbeat(i)
+		case <-snapshotTicker.C:
+			rf.mu.Lock()
+			if rf.snapshot != nil {
+				rf.mu.Unlock()
+				go rf.installSnapShot(i)
+			} else {
+				rf.mu.Unlock()
+			}
 		}
 	}
 }
@@ -422,6 +432,36 @@ func (rf *Raft) handleAppendEntries(i int, result AppendEntriesResult) {
 	}
 }
 
+func (rf *Raft) installSnapShot(i int) {
+	rf.mu.Lock()
+	args := InstallSnapshotArgs{
+		Term:              rf.currentTerm,
+		LeaderId:          rf.me,
+		LastIncludedIndex: rf.lastIncludeIndex,
+		LastIncludedTerm:  rf.lastIncludeTerm,
+		Data:              rf.snapshot,
+	}
+	rf.mu.Unlock()
+
+	reply := InstallSnapshotReply{}
+	ok := rf.sendInstallSnapshot(i, &args, &reply)
+
+	if !ok || !rf.isLeader() {
+		return
+	}
+	if rf.receiveHigherTerm(-1, reply.Term) {
+		return
+	}
+	if !rf.isLeader() {
+		return
+	}
+
+	rf.mu.Lock()
+	rf.matchIndex[i] = max(rf.matchIndex[i], args.LastIncludedIndex)
+	rf.nextIndex[i] = max(rf.nextIndex[i], rf.lastIncludeIndex+1)
+	rf.mu.Unlock()
+}
+
 func (rf *Raft) replicateLog(i int, prevLogIndex int, prevLogTerm int, entries []Log) {
 	rf.mu.Lock()
 	args := AppendEntriesArgs{
@@ -467,8 +507,10 @@ func (rf *Raft) sendHeartbeat(i int) {
 		rf.mu.Unlock()
 		return
 	}
+	rf.debug(RPC, "%d heartbeat", i)
+	rf.debugState()
 
-	peerNextIdx := rf.nextIndex[i]
+	peerNextIdx := max(rf.nextIndex[i], rf.lastIncludeIndex+1)
 	prevIdx := peerNextIdx - 1
 	prevTerm := rf.logTermAt(prevIdx)
 
