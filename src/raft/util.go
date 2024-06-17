@@ -55,6 +55,22 @@ func (rf *Raft) debugState() {
 	}
 }
 
+func (rf *Raft) debugStateTopic(topic Topic) {
+	pc, _, _, _ := runtime.Caller(1)
+	funcName := runtime.FuncForPC(pc).Name()
+	if STATE&DebugLevel&topic != 0 {
+		str := fmt.Sprintf("Current Term: %d ", (*rf).currentTerm)
+		str += fmt.Sprintf("last include Idx : %d ", (*rf).lastIncludeIndex)
+		str += fmt.Sprintf("Peer next Index: %+v ", (*rf).nextIndex)
+		str += fmt.Sprintf("Peer Match Index: %+v ", (*rf).matchIndex)
+		str += fmt.Sprintf("Commit Idx: %d ", (*rf).commitIndex)
+		str += fmt.Sprintf("Last Applied: %d", (*rf).lastApplied)
+		str += fmt.Sprintf("Raft Log: %+v\n", (*rf).log)
+		prefix := fmt.Sprintf("SEVER(%d): [%s]:", rf.me, funcName)
+		log.Printf(prefix + str)
+	}
+}
+
 func (rf *Raft) lastLogIndex() int {
 	if len(rf.log) == 0 {
 		return rf.lastIncludeIndex

@@ -154,7 +154,7 @@ func (rf *Raft) readPersist(data []byte) {
 		rf.voteFor = voteFor
 		rf.lastIncludeIndex = lastIncludeIndex
 		rf.lastIncludeTerm = lastIncludeTerm
-		rf.debug(PERSIST, "Restore success")
+		rf.debug(PERSIST, "Restore raft state success")
 	}
 }
 
@@ -284,7 +284,7 @@ func (rf *Raft) applier() {
 	for !rf.killed() {
 		select {
 		case <-ticker.C:
-			for rf.commitIndex > rf.lastApplied && rf.lastApplied-rf.lastIncludeIndex < len(rf.log) {
+			for rf.applyAvailable() {
 				rf.mu.Lock()
 				rf.debug(APPLY, "Apply message at %d", rf.lastApplied+1)
 				toBeAppliedEntry := rf.log[rf.lastApplied-rf.lastIncludeIndex]
@@ -300,6 +300,12 @@ func (rf *Raft) applier() {
 			}
 		}
 	}
+}
+
+func (rf *Raft) applyAvailable() bool {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	return rf.commitIndex > rf.lastApplied && rf.lastApplied-rf.lastIncludeIndex < len(rf.log)
 }
 
 func (rf *Raft) resetElectionTimeout() time.Duration {
@@ -508,7 +514,7 @@ func (rf *Raft) sendHeartbeat(i int) {
 		return
 	}
 	rf.debug(RPC, "%d heartbeat", i)
-	rf.debugState()
+	rf.debugStateTopic(RPC)
 
 	peerNextIdx := max(rf.nextIndex[i], rf.lastIncludeIndex+1)
 	prevIdx := peerNextIdx - 1
@@ -579,16 +585,16 @@ func Make(peers []*labrpc.ClientEnd, me int,
 		rf.appendEntriesResultCh[i] = make(chan AppendEntriesResult)
 	}
 	// initialize from state persisted before a crash
-	rf.readPersist(persister.ReadRaftState())
-	if rf.persister.SnapshotSize() > 0 {
-		rf.snapshot = persister.ReadSnapshot()
-		rf.applyCh <- ApplyMsg{
-			SnapshotValid: true,
-			Snapshot:      rf.snapshot,
-			SnapshotTerm:  rf.lastIncludeTerm,
-			SnapshotIndex: rf.lastIncludeIndex,
-		}
+	if persister.RaftStateSize() > 0 {
+		rf.readPersist(persister.ReadRaftState())
 	}
+	if rf.persister.SnapshotSize() > 0 {
+		rf.debug(SNAPSHOT, "restore snapshot at %d", rf.lastIncludeIndex)
+		rf.snapshot = persister.ReadSnapshot()
+		rf.lastApplied = rf.lastIncludeIndex
+	}
+	rf.debug(SNAPSHOT, "Server make")
+	rf.debugState()
 
 	// Start ticker goroutine to start elections
 	go rf.ticker()
