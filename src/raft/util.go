@@ -10,7 +10,7 @@ import (
 
 // Debugging
 
-const DebugLevel = 0
+const DebugLevel = STATE | RPC | PERSIST | VOTING
 
 type Topic int
 
@@ -144,6 +144,6 @@ func (rf *Raft) isCandidate() bool {
 // return a random amount of time between 50 and 350
 // milliseconds.
 func getElectionTimeout() time.Duration {
-	ms := 100 + (rand.Int63() % 300)
+	ms := 150 + (rand.Int63() % 300)
 	return time.Duration(ms) * time.Millisecond
 }
