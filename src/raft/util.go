@@ -10,7 +10,7 @@ import (
 
 // Debugging
 
-const DebugLevel = STATE | RPC | PERSIST | VOTING
+const DebugLevel = 0
 
 type Topic int
 

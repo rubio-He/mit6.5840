@@ -420,7 +420,7 @@ func (rf *Raft) handleAppendEntries(i int, result AppendEntriesResult) {
 	var entries []Log
 	if result.Success {
 		if rf.nextIndex[i]-1-rf.lastIncludeIndex < len(rf.log) {
-			entries = rf.log[rf.nextIndex[i]-1-rf.lastIncludeIndex : min(rf.nextIndex[i]-rf.lastIncludeIndex+100, len(rf.log))]
+			entries = rf.log[rf.nextIndex[i]-1-rf.lastIncludeIndex:]
 		}
 	}
 
