@@ -7,3 +7,5 @@
   - [x] 3C Persistence
   - [x] 3D Log compaction (snapshotting)
 - [ ] Lab4
+  - [ ] Part A
+  - [ ] Part B
