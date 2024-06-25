@@ -178,11 +178,11 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 }
 
 type AppendEntriesResult struct {
-	Success            bool
 	LastEntryInRequest Log
 	PrevLogIndex       int
 	ConflictIndex      int
 	ConflictTerm       int
+	Success            bool
 }
 
 // the service using Raft (e.g. a k/v server) wants to start
@@ -206,7 +206,7 @@ func (rf *Raft) Start(cmd interface{}) (int, int, bool) {
 	if !isLeader {
 		return index, term, isLeader
 	}
-	//rf.debug(STATE, "A leader receive for cmd %d", cmd)
+	// rf.debug(STATE, "A leader receive for cmd %d", cmd)
 	newEntry := Log{cmd, rf.currentTerm, index}
 	rf.log = append(rf.log, newEntry)
 	rf.persist()
@@ -282,22 +282,20 @@ func (rf *Raft) ticker() {
 func (rf *Raft) applier() {
 	ticker := time.NewTicker(50 * time.Millisecond)
 	for !rf.killed() {
-		select {
-		case <-ticker.C:
-			for rf.applyAvailable() {
-				rf.mu.Lock()
-				rf.debug(APPLY, "Apply message at %d", rf.lastApplied+1)
-				toBeAppliedEntry := rf.log[rf.lastApplied-rf.lastIncludeIndex]
-				msg := ApplyMsg{
-					CommandValid: true,
-					Command:      toBeAppliedEntry.Command,
-					CommandIndex: toBeAppliedEntry.Index,
-				}
-				rf.lastApplied = toBeAppliedEntry.Index
-				rf.mu.Unlock()
-				rf.applyCh <- msg
-				rf.debug(APPLY, "Applied Message of %+v", msg)
+		<-ticker.C
+		for rf.applyAvailable() {
+			rf.mu.Lock()
+			rf.debug(APPLY, "Apply message at %d", rf.lastApplied+1)
+			toBeAppliedEntry := rf.log[rf.lastApplied-rf.lastIncludeIndex]
+			msg := ApplyMsg{
+				CommandValid: true,
+				Command:      toBeAppliedEntry.Command,
+				CommandIndex: toBeAppliedEntry.Index,
 			}
+			rf.lastApplied = toBeAppliedEntry.Index
+			rf.mu.Unlock()
+			rf.applyCh <- msg
+			rf.debug(APPLY, "Applied Message of %+v", msg)
 		}
 	}
 }
@@ -305,6 +303,7 @@ func (rf *Raft) applier() {
 func (rf *Raft) applyAvailable() bool {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
+
 	return rf.commitIndex > rf.lastApplied && rf.lastApplied-rf.lastIncludeIndex < len(rf.log)
 }
 
@@ -391,7 +390,6 @@ func (rf *Raft) tryCommitEntry() {
 	if rf.logTermAt(majorityMatchedIndex) == rf.currentTerm {
 		rf.commitIndex = max(rf.commitIndex, majorityMatchedIndex)
 	}
-
 }
 
 func (rf *Raft) handleAppendEntries(i int, result AppendEntriesResult) {
@@ -522,7 +520,7 @@ func (rf *Raft) sendHeartbeat(i int) {
 
 	var entries []Log
 	if len(rf.log) >= peerNextIdx-rf.lastIncludeIndex {
-		entries = rf.log[peerNextIdx-1-rf.lastIncludeIndex : peerNextIdx-rf.lastIncludeIndex]
+		entries = rf.log[peerNextIdx-1-rf.lastIncludeIndex:]
 	}
 	rf.mu.Unlock()
 	rf.replicateLog(i, prevIdx, prevTerm, entries)
