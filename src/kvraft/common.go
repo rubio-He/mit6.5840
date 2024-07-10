@@ -4,6 +4,7 @@ const (
 	OK             = "OK"
 	ErrNoKey       = "ErrNoKey"
 	ErrWrongLeader = "ErrWrongLeader"
+	ErrKilled      = "ErrKilled"
 )
 
 type Err string
@@ -27,6 +28,7 @@ type GetArgs struct {
 }
 
 type GetReply struct {
-	Err   Err
-	Value string
+	Err      Err
+	LeaderId int
+	Value    string
 }

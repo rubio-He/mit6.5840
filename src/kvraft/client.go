@@ -1,12 +1,16 @@
 package kvraft
 
-import "6.5840/labrpc"
-import "crypto/rand"
-import "math/big"
+import (
+	"crypto/rand"
+	"math/big"
+
+	"6.5840/labrpc"
+)
 
 type Clerk struct {
-	servers []*labrpc.ClientEnd
-	// You will have to modify this struct.
+	servers  []*labrpc.ClientEnd
+	leaderId int
+	id       int
 }
 
 func nrand() int64 {
@@ -19,7 +23,8 @@ func nrand() int64 {
 func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 	ck := new(Clerk)
 	ck.servers = servers
-	// You'll have to add code here.
+	ck.leaderId = int(nrand()) % len(ck.servers)
+	ck.id = int(nrand())
 	return ck
 }
 
@@ -34,9 +39,21 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 // must match the declared types of the RPC handler function's
 // arguments. and reply must be passed as a pointer.
 func (ck *Clerk) Get(key string) string {
-
-	// You will have to modify this function.
-	return ""
+	DPrintf("%d Start Get", ck.id)
+	reply := GetReply{}
+	i := ck.leaderId
+	for ck.servers[i].Call("KVServer.Get", &GetArgs{key}, &reply) {
+		if reply.Err == ErrWrongLeader {
+			i = (i + 1) % len(ck.servers)
+			continue
+		}
+		break
+	}
+	ck.leaderId = i
+	if reply.Err == ErrNoKey {
+		return ""
+	}
+	return reply.Value
 }
 
 // shared by Put and Append.
@@ -48,12 +65,24 @@ func (ck *Clerk) Get(key string) string {
 // must match the declared types of the RPC handler function's
 // arguments. and reply must be passed as a pointer.
 func (ck *Clerk) PutAppend(key string, value string, op string) {
-	// You will have to modify this function.
+	reply := PutAppendReply{}
+	i := ck.leaderId
+	DPrintf("%d, %s, %s put", ck.id, key, value)
+	for ck.servers[i].Call("KVServer."+op, &PutAppendArgs{Key: key, Value: value}, &reply) {
+		if reply.Err == ErrWrongLeader {
+			i = (i + 1) % len(ck.servers)
+			continue
+		}
+		break
+	}
+	ck.leaderId = i
 }
 
 func (ck *Clerk) Put(key string, value string) {
+	DPrintf("Start Put")
 	ck.PutAppend(key, value, "Put")
 }
 func (ck *Clerk) Append(key string, value string) {
+	DPrintf("Start Append")
 	ck.PutAppend(key, value, "Append")
 }

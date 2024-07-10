@@ -1,15 +1,16 @@
 package kvraft
 
 import (
-	"6.5840/labgob"
-	"6.5840/labrpc"
-	"6.5840/raft"
 	"log"
 	"sync"
 	"sync/atomic"
+
+	"6.5840/labgob"
+	"6.5840/labrpc"
+	"6.5840/raft"
 )
 
-const Debug = false
+const Debug = true
 
 func DPrintf(format string, a ...interface{}) (n int, err error) {
 	if Debug {
@@ -19,9 +20,8 @@ func DPrintf(format string, a ...interface{}) (n int, err error) {
 }
 
 type Op struct {
-	// Your definitions here.
-	// Field names must start with capital letters,
-	// otherwise RPC will break.
+	Key   string
+	Value string
 }
 
 type KVServer struct {
@@ -33,19 +33,56 @@ type KVServer struct {
 
 	maxraftstate int // snapshot if log grows this big
 
-	// Your definitions here.
+	kvmap map[string]string
 }
 
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
-	// Your code here.
+	// Early return if the server is killed.
+	if kv.killed() {
+		reply.Err = ErrKilled
+		return
+	}
+
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+	if _, isLeader := kv.rf.GetState(); !isLeader {
+		reply.Err = ErrWrongLeader
+		return
+	}
+	DPrintf(" map is %+v", kv.kvmap)
+	DPrintf("key is %+v", kv.kvmap[args.Key])
+
+	if val, ok := kv.kvmap[args.Key]; ok {
+		reply.Value = val
+	}
+	reply.Err = OK
 }
 
 func (kv *KVServer) Put(args *PutAppendArgs, reply *PutAppendReply) {
-	// Your code here.
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+	//
+	if _, isLeader := kv.rf.GetState(); !isLeader {
+		reply.Err = ErrWrongLeader
+		return
+	}
+
+	kv.kvmap[args.Key] = args.Value
+	DPrintf(" map is %+v", kv.kvmap)
+	reply.Err = OK
 }
 
 func (kv *KVServer) Append(args *PutAppendArgs, reply *PutAppendReply) {
-	// Your code here.
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+	if _, isLeader := kv.rf.GetState(); !isLeader {
+		reply.Err = ErrWrongLeader
+		return
+	}
+	if val, ok := kv.kvmap[args.Key]; ok {
+		kv.kvmap[args.Key] = val + args.Value
+	}
+	reply.Err = OK
 }
 
 // the tester calls Kill() when a KVServer instance won't
@@ -89,11 +126,23 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv.maxraftstate = maxraftstate
 
 	// You may need initialization code here.
-
+	DPrintf("Server built")
 	kv.applyCh = make(chan raft.ApplyMsg)
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
-
-	// You may need initialization code here.
+	kv.kvmap = make(map[string]string)
+	go kv.applier()
 
 	return kv
+}
+
+func (kv *KVServer) applier() {
+	for !kv.killed() {
+		msg := <-kv.applyCh
+		kv.mu.Lock()
+		if msg.CommandValid {
+			op := msg.Command.(Op)
+			kv.kvmap[op.Key] = op.Value
+		}
+		kv.mu.Unlock()
+	}
 }
