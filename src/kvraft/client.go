@@ -10,7 +10,6 @@ import (
 type Clerk struct {
 	servers  []*labrpc.ClientEnd
 	leaderId int
-	id       int
 }
 
 func nrand() int64 {
@@ -24,7 +23,6 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 	ck := new(Clerk)
 	ck.servers = servers
 	ck.leaderId = int(nrand()) % len(ck.servers)
-	ck.id = int(nrand())
 	return ck
 }
 
@@ -39,11 +37,15 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 // must match the declared types of the RPC handler function's
 // arguments. and reply must be passed as a pointer.
 func (ck *Clerk) Get(key string) string {
-	DPrintf("%d Start Get", ck.id)
 	reply := GetReply{}
 	i := ck.leaderId
-	for ck.servers[i].Call("KVServer.Get", &GetArgs{key}, &reply) {
-		if reply.Err == ErrWrongLeader {
+	for {
+		DPrintf("Start Get")
+		ok := ck.servers[i].Call("KVServer.Get", &GetArgs{key}, &reply)
+		if !ok {
+			continue
+		}
+		if ok && reply.Err == ErrWrongLeader {
 			i = (i + 1) % len(ck.servers)
 			continue
 		}
@@ -67,9 +69,11 @@ func (ck *Clerk) Get(key string) string {
 func (ck *Clerk) PutAppend(key string, value string, op string) {
 	reply := PutAppendReply{}
 	i := ck.leaderId
-	DPrintf("%d, %s, %s put", ck.id, key, value)
-	for ck.servers[i].Call("KVServer."+op, &PutAppendArgs{Key: key, Value: value}, &reply) {
-		if reply.Err == ErrWrongLeader {
+	uuid := nrand()
+	for {
+		DPrintf("%s, %s put to leader %d", key, value, i)
+		ok := ck.servers[i].Call("KVServer."+op, &PutAppendArgs{Key: key, Value: value, Uuid: uuid}, &reply)
+		if !ok || reply.Err == ErrWrongLeader {
 			i = (i + 1) % len(ck.servers)
 			continue
 		}

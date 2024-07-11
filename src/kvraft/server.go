@@ -19,7 +19,17 @@ func DPrintf(format string, a ...interface{}) (n int, err error) {
 	return
 }
 
+type OpType string
+
+const (
+	PutOp    OpType = "Put"
+	AppendOp OpType = "Append"
+	GetOp    OpType = "Get"
+)
+
 type Op struct {
+	Idx   int
+	Type  OpType
 	Key   string
 	Value string
 }
@@ -33,7 +43,10 @@ type KVServer struct {
 
 	maxraftstate int // snapshot if log grows this big
 
-	kvmap map[string]string
+	newestOpIdx  int
+	kvmap        map[string]string
+	opmap        map[int64]Op
+	opResultChan chan Op
 }
 
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
@@ -49,38 +62,66 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 		reply.Err = ErrWrongLeader
 		return
 	}
-	DPrintf(" map is %+v", kv.kvmap)
-	DPrintf("key is %+v", kv.kvmap[args.Key])
 
-	if val, ok := kv.kvmap[args.Key]; ok {
-		reply.Value = val
-	}
+	op := Op{Idx: kv.newestOpIdx + 1, Type: GetOp, Key: args.Key, Value: ""}
+	kv.rf.Start(op) // TODO: need the term and index here.
+	kv.mu.Unlock()
+	op = <-kv.opResultChan
+	kv.mu.Lock()
+	DPrintf("%+v", kv.kvmap)
+	reply.Value = op.Value
 	reply.Err = OK
 }
 
 func (kv *KVServer) Put(args *PutAppendArgs, reply *PutAppendReply) {
+	if kv.killed() {
+		reply.Err = ErrKilled
+		return
+	}
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
-	//
+
 	if _, isLeader := kv.rf.GetState(); !isLeader {
 		reply.Err = ErrWrongLeader
 		return
 	}
+	// Skip the duplicate operations.
+	if _, ok := kv.opmap[args.Uuid]; !ok {
+		kv.kvmap[args.Key] = args.Value
+		op := Op{Idx: kv.newestOpIdx + 1, Type: PutOp, Key: args.Key, Value: args.Value}
+		kv.opmap[args.Uuid] = op
 
-	kv.kvmap[args.Key] = args.Value
-	DPrintf(" map is %+v", kv.kvmap)
+		kv.rf.Start(op)
+
+		kv.mu.Unlock()
+		<-kv.opResultChan
+		kv.mu.Lock()
+	}
 	reply.Err = OK
 }
 
 func (kv *KVServer) Append(args *PutAppendArgs, reply *PutAppendReply) {
+	if kv.killed() {
+		reply.Err = ErrKilled
+		return
+	}
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
 	if _, isLeader := kv.rf.GetState(); !isLeader {
 		reply.Err = ErrWrongLeader
 		return
 	}
-	if val, ok := kv.kvmap[args.Key]; ok {
-		kv.kvmap[args.Key] = val + args.Value
+
+	// Skip the duplicate operations.
+	if _, ok := kv.opmap[args.Uuid]; !ok {
+		if _, ok := kv.kvmap[args.Key]; ok {
+			op := Op{Idx: kv.newestOpIdx + 1, Type: AppendOp, Key: args.Key, Value: args.Value}
+			kv.opmap[args.Uuid] = op
+			kv.rf.Start(op)
+			kv.mu.Unlock()
+			<-kv.opResultChan
+			kv.mu.Lock()
+		}
 	}
 	reply.Err = OK
 }
@@ -129,7 +170,10 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	DPrintf("Server built")
 	kv.applyCh = make(chan raft.ApplyMsg)
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
+	kv.newestOpIdx = 0
+	kv.opmap = make(map[int64]Op)
 	kv.kvmap = make(map[string]string)
+	kv.opResultChan = make(chan Op)
 	go kv.applier()
 
 	return kv
@@ -139,10 +183,21 @@ func (kv *KVServer) applier() {
 	for !kv.killed() {
 		msg := <-kv.applyCh
 		kv.mu.Lock()
+		op := msg.Command.(Op)
 		if msg.CommandValid {
-			op := msg.Command.(Op)
-			kv.kvmap[op.Key] = op.Value
+			switch op.Type {
+			case PutOp:
+				kv.kvmap[op.Key] = op.Value
+			case AppendOp:
+				kv.kvmap[op.Key] += op.Value
+			case GetOp:
+				if val, ok := kv.kvmap[op.Key]; ok {
+					op.Value = val
+				}
+			}
+			kv.newestOpIdx += 1
 		}
 		kv.mu.Unlock()
+		kv.opResultChan <- op
 	}
 }
