@@ -39,14 +39,15 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 func (ck *Clerk) Get(key string) string {
 	reply := GetReply{}
 	i := ck.leaderId
+	uuid := nrand()
 	for {
-		DPrintf("Start Get")
-		ok := ck.servers[i].Call("KVServer.Get", &GetArgs{key}, &reply)
-		if !ok {
+		DPrintf("Start Get to Leader %d", ck.leaderId)
+		ok := ck.servers[i].Call("KVServer.Get", &GetArgs{key, uuid}, &reply)
+		if !ok || reply.Err == ErrWrongLeader {
+			i = (i + 1) % len(ck.servers)
 			continue
 		}
-		if ok && reply.Err == ErrWrongLeader {
-			i = (i + 1) % len(ck.servers)
+		if reply.Err == ErrPartioned {
 			continue
 		}
 		break
@@ -75,6 +76,9 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 		ok := ck.servers[i].Call("KVServer."+op, &PutAppendArgs{Key: key, Value: value, Uuid: uuid}, &reply)
 		if !ok || reply.Err == ErrWrongLeader {
 			i = (i + 1) % len(ck.servers)
+			continue
+		}
+		if reply.Err == ErrPartioned {
 			continue
 		}
 		break

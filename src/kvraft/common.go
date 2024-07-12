@@ -5,6 +5,7 @@ const (
 	ErrNoKey       = "ErrNoKey"
 	ErrWrongLeader = "ErrWrongLeader"
 	ErrKilled      = "ErrKilled"
+	ErrPartioned   = "ErrPartioned"
 )
 
 type Err string
@@ -22,6 +23,8 @@ type PutAppendReply struct {
 
 type GetArgs struct {
 	Key string
+
+	Uuid int64
 }
 
 type GetReply struct {

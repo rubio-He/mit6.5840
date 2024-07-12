@@ -32,6 +32,8 @@ type Op struct {
 	Type  OpType
 	Key   string
 	Value string
+
+	Uuid int64
 }
 
 type KVServer struct {
@@ -59,17 +61,23 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
 	if _, isLeader := kv.rf.GetState(); !isLeader {
+		DPrintf("Failed, because not a leader")
 		reply.Err = ErrWrongLeader
 		return
 	}
 
-	op := Op{Idx: kv.newestOpIdx + 1, Type: GetOp, Key: args.Key, Value: ""}
-	kv.rf.Start(op) // TODO: need the term and index here.
-	kv.mu.Unlock()
-	op = <-kv.opResultChan
-	kv.mu.Lock()
-	DPrintf("%+v", kv.kvmap)
-	reply.Value = op.Value
+	if _, ok := kv.opmap[args.Uuid]; !ok {
+		op := Op{Idx: kv.newestOpIdx + 1, Type: GetOp, Key: args.Key, Value: "", Uuid: args.Uuid}
+		kv.rf.Start(op) // TODO: need the term and index here.
+		kv.mu.Unlock()
+		result := <-kv.opResultChan
+		kv.mu.Lock()
+		if result.Uuid != args.Uuid {
+			reply.Err = ErrPartioned
+			return
+		}
+	}
+	reply.Value = kv.kvmap[args.Key]
 	reply.Err = OK
 }
 
@@ -82,20 +90,24 @@ func (kv *KVServer) Put(args *PutAppendArgs, reply *PutAppendReply) {
 	defer kv.mu.Unlock()
 
 	if _, isLeader := kv.rf.GetState(); !isLeader {
+		DPrintf("Failed, because not a leader")
 		reply.Err = ErrWrongLeader
 		return
 	}
 	// Skip the duplicate operations.
 	if _, ok := kv.opmap[args.Uuid]; !ok {
 		kv.kvmap[args.Key] = args.Value
-		op := Op{Idx: kv.newestOpIdx + 1, Type: PutOp, Key: args.Key, Value: args.Value}
+		op := Op{Idx: kv.newestOpIdx + 1, Type: PutOp, Key: args.Key, Value: args.Value, Uuid: args.Uuid}
 		kv.opmap[args.Uuid] = op
 
 		kv.rf.Start(op)
-
 		kv.mu.Unlock()
-		<-kv.opResultChan
+		result := <-kv.opResultChan
 		kv.mu.Lock()
+		if result.Uuid != args.Uuid {
+			reply.Err = ErrPartioned
+			return
+		}
 	}
 	reply.Err = OK
 }
@@ -115,12 +127,16 @@ func (kv *KVServer) Append(args *PutAppendArgs, reply *PutAppendReply) {
 	// Skip the duplicate operations.
 	if _, ok := kv.opmap[args.Uuid]; !ok {
 		if _, ok := kv.kvmap[args.Key]; ok {
-			op := Op{Idx: kv.newestOpIdx + 1, Type: AppendOp, Key: args.Key, Value: args.Value}
+			op := Op{Idx: kv.newestOpIdx + 1, Type: AppendOp, Key: args.Key, Value: args.Value, Uuid: args.Uuid}
 			kv.opmap[args.Uuid] = op
 			kv.rf.Start(op)
 			kv.mu.Unlock()
-			<-kv.opResultChan
+			result := <-kv.opResultChan
 			kv.mu.Lock()
+			if result.Uuid != args.Uuid {
+				reply.Err = ErrPartioned
+				return
+			}
 		}
 	}
 	reply.Err = OK
@@ -191,9 +207,6 @@ func (kv *KVServer) applier() {
 			case AppendOp:
 				kv.kvmap[op.Key] += op.Value
 			case GetOp:
-				if val, ok := kv.kvmap[op.Key]; ok {
-					op.Value = val
-				}
 			}
 			kv.newestOpIdx += 1
 		}
