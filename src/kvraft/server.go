@@ -10,7 +10,7 @@ import (
 	"6.5840/raft"
 )
 
-const Debug = true
+const Debug = false
 
 func DPrintf(format string, a ...interface{}) (n int, err error) {
 	if Debug {
@@ -56,16 +56,10 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	defer kv.mu.Unlock()
 	_, isLeader := kv.rf.GetState()
 	if !isLeader {
-		DPrintf("Failed, because not a leader")
 		reply.Err = ErrWrongLeader
 		return
 	}
-	// Skip the duplicate operations.
-	if _, ok := kv.opmap[args.Uuid]; ok {
-		reply.Err = OK
-		reply.Value = kv.kvmap[args.Key]
-		return
-	}
+	DPrintf("kv %d receive Get %+v", kv.me, args)
 	index := kv.newestOpIdx + 1
 	op := Op{Idx: index, Type: GetOp, Key: args.Key, Value: "", Uuid: args.Uuid}
 	DPrintf("Receive Get request, Send to Raft state machine.")
@@ -78,15 +72,10 @@ func (kv *KVServer) Put(args *PutAppendArgs, reply *PutAppendReply) {
 	defer kv.mu.Unlock()
 	_, isLeader := kv.rf.GetState()
 	if !isLeader {
-		DPrintf("Failed, because not a leader")
 		reply.Err = ErrWrongLeader
 		return
 	}
-	// Skip the duplicate operations.
-	if _, ok := kv.opmap[args.Uuid]; ok {
-		reply.Err = OK
-		return
-	}
+	DPrintf("kv %d receive Put %+v", kv.me, args)
 
 	index := kv.newestOpIdx + 1
 	op := Op{Idx: index, Type: PutOp, Key: args.Key, Value: args.Value, Uuid: args.Uuid}
@@ -103,18 +92,7 @@ func (kv *KVServer) Append(args *PutAppendArgs, reply *PutAppendReply) {
 		reply.Err = ErrWrongLeader
 		return
 	}
-
-	// Skip the duplicate operations.
-	if _, ok := kv.opmap[args.Uuid]; ok {
-		reply.Err = OK
-		return
-	}
-	_, ok := kv.kvmap[args.Key]
-	if !ok {
-		reply.Err = ErrNoKey
-		return
-	}
-
+	DPrintf("kv %d receive Append %+v", kv.me, args)
 	index := kv.newestOpIdx + 1
 	DPrintf("Append to the raft state machine")
 	op := Op{Idx: index, Type: AppendOp, Key: args.Key, Value: args.Value, Uuid: args.Uuid}
@@ -179,39 +157,41 @@ func (kv *KVServer) wait(reply interface{}, op OpType, uuid int64, index int) {
 	for {
 		select {
 		case result := <-kv.opResultChan:
-			switch result.Type {
-			case GetOp:
-				kv.opmap[result.Uuid] = result
-			case PutOp:
-				kv.opmap[result.Uuid] = result
-				kv.kvmap[result.Key] = result.Value
-			case AppendOp:
-				kv.opmap[result.Uuid] = result
-				kv.kvmap[result.Key] += result.Value
+			// Skip the duplicate operations.
+			if _, ok := kv.opmap[result.Uuid]; !ok {
+				switch result.Type {
+				case GetOp:
+					kv.opmap[result.Uuid] = result
+				case PutOp:
+					kv.opmap[result.Uuid] = result
+					kv.kvmap[result.Key] = result.Value
+				case AppendOp:
+					kv.opmap[result.Uuid] = result
+					kv.kvmap[result.Key] += result.Value
+				}
+			}
+
+			DPrintf("result op %+v", result)
+
+			if result.Uuid != uuid {
+				continue
 			}
 
 			switch op {
 			case GetOp:
 				rply := reply.(*GetReply)
-				if result.Uuid != uuid {
-					rply.Err = ErrWrongLeader
-					return
-				}
 				rply.Value = kv.kvmap[result.Key]
 				rply.Err = OK
 				return
 			case PutOp, AppendOp:
 				rply := reply.(*PutAppendReply)
-				if result.Uuid != uuid {
-					rply.Err = ErrWrongLeader
-					return
-				}
 				rply.Err = OK
 				return
 			}
 
 		default:
 			if _, isLeader := kv.rf.GetState(); !isLeader {
+				DPrintf("kv %d not a leader anymore, return", kv.me)
 				switch op {
 				case GetOp:
 					rply := reply.(*GetReply)

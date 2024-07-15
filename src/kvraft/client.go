@@ -40,11 +40,14 @@ func (ck *Clerk) Get(key string) string {
 	reply := GetReply{}
 	i := ck.leaderId
 	uuid := nrand()
+	DPrintf("Start Get to Leader")
 	for {
-		DPrintf("Start Get to Leader %d", ck.leaderId)
 		ok := ck.servers[i].Call("KVServer.Get", &GetArgs{key, uuid}, &reply)
 		if !ok || reply.Err == ErrWrongLeader {
 			i = (i + 1) % len(ck.servers)
+			continue
+		}
+		if reply.Err == ErrPartitioned {
 			continue
 		}
 		break
@@ -69,17 +72,20 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 	reply := PutAppendReply{}
 	i := ck.leaderId
 	uuid := nrand()
+	DPrintf("%s, %s put/Append to leader", key, value)
 	for {
-		DPrintf("%s, %s put to leader %d", key, value, i)
 		ok := ck.servers[i].Call("KVServer."+op, &PutAppendArgs{Key: key, Value: value, Uuid: uuid}, &reply)
 		if !ok || reply.Err == ErrWrongLeader {
 			i = (i + 1) % len(ck.servers)
 			continue
 		}
+		if reply.Err == ErrPartitioned {
+			continue
+		}
 		break
 	}
 	ck.leaderId = i
-	DPrintf("Receive Put from Leader %d", ck.leaderId)
+	DPrintf("Receive Put/Append from Leader %d", ck.leaderId)
 }
 
 func (ck *Clerk) Put(key string, value string) {
