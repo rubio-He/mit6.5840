@@ -47,15 +47,13 @@ func (ck *Clerk) Get(key string) string {
 			i = (i + 1) % len(ck.servers)
 			continue
 		}
-		if reply.Err == ErrPartioned {
-			continue
-		}
 		break
 	}
 	ck.leaderId = i
 	if reply.Err == ErrNoKey {
 		return ""
 	}
+	DPrintf("Receive Get from Leader %d", ck.leaderId)
 	return reply.Value
 }
 
@@ -78,12 +76,10 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 			i = (i + 1) % len(ck.servers)
 			continue
 		}
-		if reply.Err == ErrPartioned {
-			continue
-		}
 		break
 	}
 	ck.leaderId = i
+	DPrintf("Receive Put from Leader %d", ck.leaderId)
 }
 
 func (ck *Clerk) Put(key string, value string) {
