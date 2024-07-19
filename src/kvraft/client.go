@@ -10,6 +10,7 @@ import (
 type Clerk struct {
 	servers  []*labrpc.ClientEnd
 	leaderId int
+	clientId int
 }
 
 func nrand() int64 {
@@ -23,6 +24,7 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 	ck := new(Clerk)
 	ck.servers = servers
 	ck.leaderId = int(nrand()) % len(ck.servers)
+	ck.clientId = int(nrand())
 	return ck
 }
 
@@ -42,7 +44,7 @@ func (ck *Clerk) Get(key string) string {
 	uuid := nrand()
 	DPrintf("Start Get to Leader")
 	for {
-		ok := ck.servers[i].Call("KVServer.Get", &GetArgs{key, uuid}, &reply)
+		ok := ck.servers[i].Call("KVServer.Get", &GetArgs{key, uuid, ck.clientId}, &reply)
 		if !ok || reply.Err == ErrWrongLeader {
 			i = (i + 1) % len(ck.servers)
 			continue
@@ -74,7 +76,7 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 	uuid := nrand()
 	DPrintf("%s, %s put/Append to leader", key, value)
 	for {
-		ok := ck.servers[i].Call("KVServer."+op, &PutAppendArgs{Key: key, Value: value, Uuid: uuid}, &reply)
+		ok := ck.servers[i].Call("KVServer."+op, &PutAppendArgs{Key: key, Value: value, Uuid: uuid, ClientId: ck.clientId}, &reply)
 		if !ok || reply.Err == ErrWrongLeader {
 			i = (i + 1) % len(ck.servers)
 			continue

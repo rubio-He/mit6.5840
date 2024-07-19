@@ -33,7 +33,8 @@ type Op struct {
 	Key   string
 	Value string
 
-	Uuid int64
+	Uuid     int64
+	ClientId int
 }
 
 type KVServer struct {
@@ -44,51 +45,107 @@ type KVServer struct {
 	dead    int32 // set by Kill()
 
 	maxraftstate int // snapshot if log grows this big
-	persister    *raft.Persister
 
 	newestOpIdx  int
 	kvmap        map[string]string
 	opmap        map[int64]Op
-	opResultChan chan Op
+	getOpChan    chan Op
+	putOpChan    chan Op
+	appendOpChan chan Op
 }
 
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	kv.mu.Lock()
-	defer kv.mu.Unlock()
-	op := Op{Idx: kv.newestOpIdx + 1, Type: GetOp, Key: args.Key, Value: "", Uuid: args.Uuid}
-	index, _, isLeader := kv.rf.Start(op)
+	index := kv.newestOpIdx + 1
+	op := Op{Idx: index, Type: GetOp, Key: args.Key, Value: "", Uuid: args.Uuid, ClientId: args.ClientId}
+	_, _, isLeader := kv.rf.Start(op)
 	if !isLeader {
 		reply.Err = ErrWrongLeader
+		kv.mu.Unlock()
 		return
 	}
-	DPrintf("Receive Get request, Send to Raft state machine.")
-	kv.wait(reply, GetOp, args.Uuid, index)
+	DPrintf("kv %d receive Get %+v", kv.me, args)
+	kv.mu.Unlock()
+	for {
+		select {
+		case appliedOp := <-kv.getOpChan:
+			if appliedOp.Uuid != args.Uuid {
+				continue
+			}
+			reply.Err = OK
+			reply.Value = appliedOp.Value
+			return
+		default:
+			if _, isLeader := kv.rf.GetState(); !isLeader {
+				DPrintf("kv %d not a leader anymore, return", kv.me)
+				reply.Err = ErrWrongLeader
+				return
+			}
+		}
+	}
 }
 
 func (kv *KVServer) Put(args *PutAppendArgs, reply *PutAppendReply) {
 	kv.mu.Lock()
-	defer kv.mu.Unlock()
-	op := Op{Idx: kv.newestOpIdx + 1, Type: PutOp, Key: args.Key, Value: args.Value, Uuid: args.Uuid}
-	index, _, isLeader := kv.rf.Start(op)
+	index := kv.newestOpIdx + 1
+	op := Op{Idx: index, Type: PutOp, Key: args.Key, Value: args.Value, Uuid: args.Uuid, ClientId: args.ClientId}
+	_, _, isLeader := kv.rf.Start(op)
 	if !isLeader {
 		reply.Err = ErrWrongLeader
+		kv.mu.Unlock()
 		return
 	}
-	DPrintf("Put op %+v into raft state machine", args)
-	kv.wait(reply, PutOp, args.Uuid, index)
+	DPrintf("kv %d receive Put %+v", kv.me, args)
+	kv.mu.Unlock()
+
+	for {
+		select {
+		case appliedOp := <-kv.putOpChan:
+			DPrintf("put applied Op %+v", appliedOp)
+			if appliedOp.Uuid != args.Uuid {
+				continue
+			}
+			reply.Err = OK
+			return
+		default:
+			if _, isLeader := kv.rf.GetState(); !isLeader {
+				DPrintf("kv %d not a leader anymore, return", kv.me)
+				reply.Err = ErrWrongLeader
+				return
+			}
+		}
+	}
 }
 
 func (kv *KVServer) Append(args *PutAppendArgs, reply *PutAppendReply) {
 	kv.mu.Lock()
-	defer kv.mu.Unlock()
-	op := Op{Idx: kv.newestOpIdx + 1, Type: AppendOp, Key: args.Key, Value: args.Value, Uuid: args.Uuid}
-	index, _, isLeader := kv.rf.Start(op)
+	index := kv.newestOpIdx + 1
+	op := Op{Idx: index, Type: AppendOp, Key: args.Key, Value: args.Value, Uuid: args.Uuid, ClientId: args.ClientId}
+	_, _, isLeader := kv.rf.Start(op)
 	if !isLeader {
 		reply.Err = ErrWrongLeader
+		kv.mu.Unlock()
 		return
 	}
 	DPrintf("kv %d receive Append %+v", kv.me, args)
-	kv.wait(reply, AppendOp, args.Uuid, index)
+	kv.mu.Unlock()
+
+	for {
+		select {
+		case appliedOp := <-kv.appendOpChan:
+			if appliedOp.Uuid != args.Uuid {
+				continue
+			}
+			reply.Err = OK
+			return
+		default:
+			if _, isLeader := kv.rf.GetState(); !isLeader {
+				DPrintf("kv %d not a leader anymore, return", kv.me)
+				reply.Err = ErrWrongLeader
+				return
+			}
+		}
+	}
 }
 
 // the tester calls Kill() when a KVServer instance won't
@@ -132,77 +189,54 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv.maxraftstate = maxraftstate
 
 	// You may need initialization code here.
-	DPrintf("Server built")
 	kv.applyCh = make(chan raft.ApplyMsg)
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
-	kv.persister = persister
 	kv.newestOpIdx = 0
 	kv.opmap = make(map[int64]Op)
 	kv.kvmap = make(map[string]string)
-	kv.opResultChan = make(chan Op)
+	kv.getOpChan = make(chan Op)
+	kv.putOpChan = make(chan Op)
+	kv.appendOpChan = make(chan Op)
+	go kv.applier()
 
-	//if persister.SnapshotSize() > 0 {
-	//	//snapshot := persister.ReadSnapshot()
-	//}
 	return kv
 }
 
-func (kv *KVServer) wait(reply interface{}, op OpType, uuid int64, index int) {
-	for {
-		select {
-		case msg := <-kv.applyCh:
-			if msg.CommandValid {
-				result := msg.Command.(Op)
-				// Skip the duplicate operations.
-				if _, ok := kv.opmap[result.Uuid]; !ok {
-					switch result.Type {
-					case GetOp:
-						kv.opmap[result.Uuid] = result
-					case PutOp:
-						kv.opmap[result.Uuid] = result
-						kv.kvmap[result.Key] = result.Value
-					case AppendOp:
-						kv.opmap[result.Uuid] = result
-						kv.kvmap[result.Key] += result.Value
-					}
+func (kv *KVServer) applier() {
+	for !kv.killed() {
+		msg := <-kv.applyCh
+		if msg.CommandValid {
+			// Skip the duplicate operations.
+			op := msg.Command.(Op)
+			DPrintf("Receive Applied Op %+v", op)
+			kv.mu.Lock()
+			switch op.Type {
+			case GetOp:
+				if _, ok := kv.opmap[op.Uuid]; !ok {
+					kv.opmap[op.Uuid] = op
+					op.Value = kv.kvmap[op.Key]
 				}
-				//if kv.maxraftstate > 0 && kv.persister.RaftStateSize() >= kv.maxraftstate {
-				//	kv.rf.Snapshot()
-				//}
-				DPrintf("result op %+v", result)
-				if result.Uuid != uuid {
-					continue
+				if _, isLeader := kv.rf.GetState(); isLeader {
+					kv.getOpChan <- op
 				}
-				switch op {
-				case GetOp:
-					rply := reply.(*GetReply)
-					rply.Value = kv.kvmap[result.Key]
-					rply.Err = OK
-					return
-				case PutOp, AppendOp:
-					rply := reply.(*PutAppendReply)
-					rply.Err = OK
-					return
+			case PutOp:
+				if _, ok := kv.opmap[op.Uuid]; !ok {
+					kv.opmap[op.Uuid] = op
+					kv.kvmap[op.Key] = op.Value
+				}
+				if _, isLeader := kv.rf.GetState(); isLeader {
+					kv.putOpChan <- op
+				}
+			case AppendOp:
+				if _, ok := kv.opmap[op.Uuid]; !ok {
+					kv.opmap[op.Uuid] = op
+					kv.kvmap[op.Key] += op.Value
+				}
+				if _, isLeader := kv.rf.GetState(); isLeader {
+					kv.appendOpChan <- op
 				}
 			}
-		default:
-			if _, isLeader := kv.rf.GetState(); !isLeader {
-				DPrintf("kv %d not a leader anymore, return", kv.me)
-				switch op {
-				case GetOp:
-					rply := reply.(*GetReply)
-					rply.Err = ErrWrongLeader
-				case PutOp, AppendOp:
-					rply := reply.(*PutAppendReply)
-					rply.Err = ErrWrongLeader
-				}
-				return
-			}
+			kv.mu.Unlock()
 		}
 	}
 }
-
-//func (kv *KVServer) ReadSnapshot(snapshot []byte) interface{} {
-//	r := bytes.NewBuffer(snapshot)
-//	d := labgob.NewDecoder(r)
-//}

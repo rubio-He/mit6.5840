@@ -13,7 +13,9 @@ type Err string
 type PutAppendArgs struct {
 	Key   string
 	Value string
-	Uuid  int64
+
+	Uuid     int64
+	ClientId int
 }
 
 type PutAppendReply struct {
@@ -23,7 +25,8 @@ type PutAppendReply struct {
 type GetArgs struct {
 	Key string
 
-	Uuid int64
+	Uuid     int64
+	ClientId int
 }
 
 type GetReply struct {
