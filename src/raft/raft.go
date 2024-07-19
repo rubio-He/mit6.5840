@@ -345,7 +345,7 @@ func (rf *Raft) convertToLeader() {
 }
 
 func (rf *Raft) heartbeat(i int) {
-	heartBeatTicker := time.NewTicker(35 * time.Millisecond)
+	heartBeatTicker := time.NewTicker(10 * time.Millisecond)
 	snapshotTicker := time.NewTicker(50 * time.Millisecond)
 	for !rf.killed() {
 		if !rf.isLeader() {

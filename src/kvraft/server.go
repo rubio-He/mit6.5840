@@ -10,7 +10,7 @@ import (
 	"6.5840/raft"
 )
 
-const Debug = false
+const Debug = true
 
 func DPrintf(format string, a ...interface{}) (n int, err error) {
 	if Debug {
@@ -44,6 +44,7 @@ type KVServer struct {
 	dead    int32 // set by Kill()
 
 	maxraftstate int // snapshot if log grows this big
+	persister    *raft.Persister
 
 	newestOpIdx  int
 	kvmap        map[string]string
@@ -54,49 +55,39 @@ type KVServer struct {
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
-	_, isLeader := kv.rf.GetState()
+	op := Op{Idx: kv.newestOpIdx + 1, Type: GetOp, Key: args.Key, Value: "", Uuid: args.Uuid}
+	index, _, isLeader := kv.rf.Start(op)
 	if !isLeader {
 		reply.Err = ErrWrongLeader
 		return
 	}
-	DPrintf("kv %d receive Get %+v", kv.me, args)
-	index := kv.newestOpIdx + 1
-	op := Op{Idx: index, Type: GetOp, Key: args.Key, Value: "", Uuid: args.Uuid}
 	DPrintf("Receive Get request, Send to Raft state machine.")
-	kv.rf.Start(op) // TODO: need the term and index here.
 	kv.wait(reply, GetOp, args.Uuid, index)
 }
 
 func (kv *KVServer) Put(args *PutAppendArgs, reply *PutAppendReply) {
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
-	_, isLeader := kv.rf.GetState()
+	op := Op{Idx: kv.newestOpIdx + 1, Type: PutOp, Key: args.Key, Value: args.Value, Uuid: args.Uuid}
+	index, _, isLeader := kv.rf.Start(op)
 	if !isLeader {
 		reply.Err = ErrWrongLeader
 		return
 	}
-	DPrintf("kv %d receive Put %+v", kv.me, args)
-
-	index := kv.newestOpIdx + 1
-	op := Op{Idx: index, Type: PutOp, Key: args.Key, Value: args.Value, Uuid: args.Uuid}
-	DPrintf("Put op into raft state machine")
-	kv.rf.Start(op)
+	DPrintf("Put op %+v into raft state machine", args)
 	kv.wait(reply, PutOp, args.Uuid, index)
 }
 
 func (kv *KVServer) Append(args *PutAppendArgs, reply *PutAppendReply) {
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
-	_, isLeader := kv.rf.GetState()
+	op := Op{Idx: kv.newestOpIdx + 1, Type: AppendOp, Key: args.Key, Value: args.Value, Uuid: args.Uuid}
+	index, _, isLeader := kv.rf.Start(op)
 	if !isLeader {
 		reply.Err = ErrWrongLeader
 		return
 	}
 	DPrintf("kv %d receive Append %+v", kv.me, args)
-	index := kv.newestOpIdx + 1
-	DPrintf("Append to the raft state machine")
-	op := Op{Idx: index, Type: AppendOp, Key: args.Key, Value: args.Value, Uuid: args.Uuid}
-	kv.rf.Start(op)
 	kv.wait(reply, AppendOp, args.Uuid, index)
 }
 
@@ -144,51 +135,56 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	DPrintf("Server built")
 	kv.applyCh = make(chan raft.ApplyMsg)
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
+	kv.persister = persister
 	kv.newestOpIdx = 0
 	kv.opmap = make(map[int64]Op)
 	kv.kvmap = make(map[string]string)
 	kv.opResultChan = make(chan Op)
-	go kv.applier()
 
+	//if persister.SnapshotSize() > 0 {
+	//	//snapshot := persister.ReadSnapshot()
+	//}
 	return kv
 }
 
 func (kv *KVServer) wait(reply interface{}, op OpType, uuid int64, index int) {
 	for {
 		select {
-		case result := <-kv.opResultChan:
-			// Skip the duplicate operations.
-			if _, ok := kv.opmap[result.Uuid]; !ok {
-				switch result.Type {
+		case msg := <-kv.applyCh:
+			if msg.CommandValid {
+				result := msg.Command.(Op)
+				// Skip the duplicate operations.
+				if _, ok := kv.opmap[result.Uuid]; !ok {
+					switch result.Type {
+					case GetOp:
+						kv.opmap[result.Uuid] = result
+					case PutOp:
+						kv.opmap[result.Uuid] = result
+						kv.kvmap[result.Key] = result.Value
+					case AppendOp:
+						kv.opmap[result.Uuid] = result
+						kv.kvmap[result.Key] += result.Value
+					}
+				}
+				//if kv.maxraftstate > 0 && kv.persister.RaftStateSize() >= kv.maxraftstate {
+				//	kv.rf.Snapshot()
+				//}
+				DPrintf("result op %+v", result)
+				if result.Uuid != uuid {
+					continue
+				}
+				switch op {
 				case GetOp:
-					kv.opmap[result.Uuid] = result
-				case PutOp:
-					kv.opmap[result.Uuid] = result
-					kv.kvmap[result.Key] = result.Value
-				case AppendOp:
-					kv.opmap[result.Uuid] = result
-					kv.kvmap[result.Key] += result.Value
+					rply := reply.(*GetReply)
+					rply.Value = kv.kvmap[result.Key]
+					rply.Err = OK
+					return
+				case PutOp, AppendOp:
+					rply := reply.(*PutAppendReply)
+					rply.Err = OK
+					return
 				}
 			}
-
-			DPrintf("result op %+v", result)
-
-			if result.Uuid != uuid {
-				continue
-			}
-
-			switch op {
-			case GetOp:
-				rply := reply.(*GetReply)
-				rply.Value = kv.kvmap[result.Key]
-				rply.Err = OK
-				return
-			case PutOp, AppendOp:
-				rply := reply.(*PutAppendReply)
-				rply.Err = OK
-				return
-			}
-
 		default:
 			if _, isLeader := kv.rf.GetState(); !isLeader {
 				DPrintf("kv %d not a leader anymore, return", kv.me)
@@ -206,17 +202,7 @@ func (kv *KVServer) wait(reply interface{}, op OpType, uuid int64, index int) {
 	}
 }
 
-func (kv *KVServer) applier() {
-	for !kv.killed() {
-		msg := <-kv.applyCh
-		op := msg.Command.(Op)
-		if msg.CommandValid {
-			switch op.Type {
-			case PutOp:
-			case AppendOp:
-			case GetOp:
-			}
-			kv.opResultChan <- op
-		}
-	}
-}
+//func (kv *KVServer) ReadSnapshot(snapshot []byte) interface{} {
+//	r := bytes.NewBuffer(snapshot)
+//	d := labgob.NewDecoder(r)
+//}
