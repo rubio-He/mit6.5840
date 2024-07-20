@@ -224,8 +224,8 @@ func (kv *KVServer) applier() {
 			case GetOp:
 				if _, ok := kv.opmap[op.Uuid]; !ok {
 					kv.opmap[op.Uuid] = op
-					op.Value = kv.kvmap[op.Key]
 				}
+				op.Value = kv.kvmap[op.Key]
 				if _, isLeader := kv.rf.GetState(); isLeader {
 					DPrintf("kv %d Sent", kv.me)
 					kv.opChan[op.ClientId] <- op
