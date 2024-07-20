@@ -49,9 +49,6 @@ func (ck *Clerk) Get(key string) string {
 			i = (i + 1) % len(ck.servers)
 			continue
 		}
-		if reply.Err == ErrPartitioned {
-			continue
-		}
 		break
 	}
 	ck.leaderId = i
@@ -79,9 +76,6 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 		ok := ck.servers[i].Call("KVServer."+op, &PutAppendArgs{Key: key, Value: value, Uuid: uuid, ClientId: ck.clientId}, &reply)
 		if !ok || reply.Err == ErrWrongLeader {
 			i = (i + 1) % len(ck.servers)
-			continue
-		}
-		if reply.Err == ErrPartitioned {
 			continue
 		}
 		break
