@@ -56,8 +56,8 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	kv.mu.Lock()
 	index := kv.newestOpIdx + 1
 	op := Op{Idx: index, Type: GetOp, Key: args.Key, Value: "", Uuid: args.Uuid, ClientId: args.ClientId}
-	if _, ok := kv.opChan[args.ClientId]; !ok {
-		kv.opChan[args.ClientId] = make(chan Op)
+	if _, ok := kv.opChan[index]; !ok {
+		kv.opChan[index] = make(chan Op)
 	}
 	_, _, isLeader := kv.rf.Start(op)
 	if !isLeader {
@@ -65,35 +65,43 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 		kv.mu.Unlock()
 		return
 	}
-	DPrintf("kv %d receive Get %+v", kv.me, args)
-	opChan := kv.opChan[args.ClientId]
+	kv.newestOpIdx = index
+	DPrintf("kv %d receive Get %+v at index %d", kv.me, args, index)
+	opChan := kv.opChan[index]
 	kv.mu.Unlock()
-	for {
+	loop := true
+	for loop {
 		select {
 		case appliedOp := <-opChan:
-			if appliedOp.Uuid != args.Uuid {
+			DPrintf("Receive applied Op %+v", appliedOp)
+			if appliedOp.Uuid != args.Uuid || appliedOp.ClientId != args.ClientId {
 				DPrintf("skip applied Op %+v", appliedOp)
 				continue
 			}
 			reply.Err = OK
 			reply.Value = appliedOp.Value
-			return
+			loop = false
 		default:
 			if _, isLeader := kv.rf.GetState(); !isLeader {
 				DPrintf("kv %d not a leader anymore, return", kv.me)
 				reply.Err = ErrWrongLeader
-				return
+				loop = false
 			}
 		}
 	}
+	go func() {
+		kv.mu.Lock()
+		defer kv.mu.Unlock()
+		delete(kv.opChan, index)
+	}()
 }
 
 func (kv *KVServer) Put(args *PutAppendArgs, reply *PutAppendReply) {
 	kv.mu.Lock()
 	index := kv.newestOpIdx + 1
 	op := Op{Idx: index, Type: PutOp, Key: args.Key, Value: args.Value, Uuid: args.Uuid, ClientId: args.ClientId}
-	if _, ok := kv.opChan[args.ClientId]; !ok {
-		kv.opChan[args.ClientId] = make(chan Op)
+	if _, ok := kv.opChan[index]; !ok {
+		kv.opChan[index] = make(chan Op)
 	}
 	_, _, isLeader := kv.rf.Start(op)
 	if !isLeader {
@@ -101,36 +109,42 @@ func (kv *KVServer) Put(args *PutAppendArgs, reply *PutAppendReply) {
 		kv.mu.Unlock()
 		return
 	}
-	DPrintf("kv %d receive Put %+v", kv.me, args)
-	opChan := kv.opChan[args.ClientId]
+	kv.newestOpIdx = index
+	DPrintf("kv %d receive Put %+v at index %d ", kv.me, args, index)
+	opChan := kv.opChan[index]
 	kv.mu.Unlock()
-
-	for {
+	loop := true
+	for loop {
 		select {
 		case appliedOp := <-opChan:
-			DPrintf("put applied Op %+v", appliedOp)
-			if appliedOp.Uuid != args.Uuid {
+			DPrintf("Receive applied Op %+v", appliedOp)
+			if appliedOp.Uuid != args.Uuid || appliedOp.ClientId != args.ClientId {
 				DPrintf("skip applied Op %+v", appliedOp)
 				continue
 			}
 			reply.Err = OK
-			return
+			loop = false
 		default:
 			if _, isLeader := kv.rf.GetState(); !isLeader {
 				DPrintf("kv %d not a leader anymore, return", kv.me)
 				reply.Err = ErrWrongLeader
-				return
+				loop = false
 			}
 		}
 	}
+	go func() {
+		kv.mu.Lock()
+		defer kv.mu.Unlock()
+		delete(kv.opChan, index)
+	}()
 }
 
 func (kv *KVServer) Append(args *PutAppendArgs, reply *PutAppendReply) {
 	kv.mu.Lock()
 	index := kv.newestOpIdx + 1
 	op := Op{Idx: index, Type: AppendOp, Key: args.Key, Value: args.Value, Uuid: args.Uuid, ClientId: args.ClientId}
-	if _, ok := kv.opChan[args.ClientId]; !ok {
-		kv.opChan[args.ClientId] = make(chan Op)
+	if _, ok := kv.opChan[index]; !ok {
+		kv.opChan[index] = make(chan Op)
 	}
 	_, _, isLeader := kv.rf.Start(op)
 	if !isLeader {
@@ -138,27 +152,35 @@ func (kv *KVServer) Append(args *PutAppendArgs, reply *PutAppendReply) {
 		kv.mu.Unlock()
 		return
 	}
-	DPrintf("kv %d receive Append %+v", kv.me, args)
-	opChan := kv.opChan[args.ClientId]
+	kv.newestOpIdx = index
+	DPrintf("kv %d receive Append %+v at index %d", kv.me, args, index)
+	opChan := kv.opChan[index]
 	kv.mu.Unlock()
 
-	for {
+	loop := true
+	for loop {
 		select {
 		case appliedOp := <-opChan:
-			if appliedOp.Uuid != args.Uuid {
+			DPrintf("Receive applied Op %+v", appliedOp)
+			if appliedOp.Uuid != args.Uuid || appliedOp.ClientId != args.ClientId {
 				DPrintf("skip applied Op %+v", appliedOp)
 				continue
 			}
 			reply.Err = OK
-			return
+			loop = false
 		default:
 			if _, isLeader := kv.rf.GetState(); !isLeader {
 				DPrintf("kv %d not a leader anymore, return", kv.me)
 				reply.Err = ErrWrongLeader
-				return
+				loop = false
 			}
 		}
 	}
+	go func() {
+		kv.mu.Lock()
+		defer kv.mu.Unlock()
+		delete(kv.opChan, index)
+	}()
 }
 
 // the tester calls Kill() when a KVServer instance won't
@@ -218,7 +240,7 @@ func (kv *KVServer) applier() {
 		msg := <-kv.applyCh
 		if msg.CommandValid {
 			op := msg.Command.(Op)
-			DPrintf("kv %d Receive Applied Op %+v", kv.me, op)
+			//DPrintf("kv %d Receive Applied Op %+v", kv.me, op)
 			kv.mu.Lock()
 			switch op.Type {
 			case GetOp:
@@ -226,27 +248,22 @@ func (kv *KVServer) applier() {
 					kv.opmap[op.Uuid] = op
 				}
 				op.Value = kv.kvmap[op.Key]
-				if _, isLeader := kv.rf.GetState(); isLeader {
-					DPrintf("kv %d Sent", kv.me)
-					kv.opChan[op.ClientId] <- op
-				}
 			case PutOp:
 				if _, ok := kv.opmap[op.Uuid]; !ok {
 					kv.opmap[op.Uuid] = op
 					kv.kvmap[op.Key] = op.Value
-				}
-				if _, isLeader := kv.rf.GetState(); isLeader {
-					DPrintf("kv %d Sent", kv.me)
-					kv.opChan[op.ClientId] <- op
 				}
 			case AppendOp:
 				if _, ok := kv.opmap[op.Uuid]; !ok {
 					kv.opmap[op.Uuid] = op
 					kv.kvmap[op.Key] += op.Value
 				}
-				if _, isLeader := kv.rf.GetState(); isLeader {
-					DPrintf("kv %d Sent", kv.me)
-					kv.opChan[op.ClientId] <- op
+			}
+			if _, isLeader := kv.rf.GetState(); isLeader {
+				DPrintf("kv %d Sent, %+v", kv.me, op)
+				//DPrintf("op chan %+v", kv.opChan)
+				if cha, ok := kv.opChan[op.Idx]; ok {
+					cha <- op
 				}
 			}
 			kv.mu.Unlock()
