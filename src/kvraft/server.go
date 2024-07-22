@@ -1,6 +1,7 @@
 package kvraft
 
 import (
+	"bytes"
 	"log"
 	"sync"
 	"sync/atomic"
@@ -45,6 +46,7 @@ type KVServer struct {
 	dead    int32 // set by Kill()
 
 	maxraftstate int // snapshot if log grows this big
+	persister    *raft.Persister
 
 	newestOpIdx int
 	kvmap       map[string]string
@@ -222,6 +224,7 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv := new(KVServer)
 	kv.me = me
 	kv.maxraftstate = maxraftstate
+	kv.persister = persister
 
 	// You may need initialization code here.
 	kv.applyCh = make(chan raft.ApplyMsg)
@@ -242,24 +245,13 @@ func (kv *KVServer) applier() {
 			op := msg.Command.(Op)
 			//DPrintf("kv %d Receive Applied Op %+v", kv.me, op)
 			kv.mu.Lock()
-			switch op.Type {
-			case GetOp:
-				if _, ok := kv.opmap[op.Uuid]; !ok {
-					kv.opmap[op.Uuid] = op
-				}
-				op.Value = kv.kvmap[op.Key]
-			case PutOp:
-				if _, ok := kv.opmap[op.Uuid]; !ok {
-					kv.opmap[op.Uuid] = op
-					kv.kvmap[op.Key] = op.Value
-				}
-			case AppendOp:
-				if _, ok := kv.opmap[op.Uuid]; !ok {
-					kv.opmap[op.Uuid] = op
-					kv.kvmap[op.Key] += op.Value
-				}
-			}
+			kv.applyOp(&op)
 			if _, isLeader := kv.rf.GetState(); isLeader {
+				if kv.persister.RaftStateSize() >= kv.maxraftstate {
+					DPrintf("Snapshot the raft state %d", kv.persister.RaftStateSize())
+					kv.Snapshot(op.Idx)
+					DPrintf("Snapshot the raft state %d", kv.persister.RaftStateSize())
+				}
 				DPrintf("kv %d Sent, %+v", kv.me, op)
 				//DPrintf("op chan %+v", kv.opChan)
 				if cha, ok := kv.opChan[op.Idx]; ok {
@@ -267,6 +259,46 @@ func (kv *KVServer) applier() {
 				}
 			}
 			kv.mu.Unlock()
+		} else if msg.SnapshotValid {
+			kv.newestOpIdx = msg.SnapshotIndex
+			kv.Restore(msg.Snapshot)
 		}
 	}
+}
+
+func (kv *KVServer) applyOp(op *Op) {
+	switch op.Type {
+	case GetOp:
+		if _, ok := kv.opmap[op.Uuid]; !ok {
+			kv.opmap[op.Uuid] = *op
+		}
+		op.Value = kv.kvmap[op.Key]
+	case PutOp:
+		if _, ok := kv.opmap[op.Uuid]; !ok {
+			kv.opmap[op.Uuid] = *op
+			kv.kvmap[op.Key] = op.Value
+		}
+	case AppendOp:
+		if _, ok := kv.opmap[op.Uuid]; !ok {
+			kv.opmap[op.Uuid] = *op
+			kv.kvmap[op.Key] += op.Value
+		}
+	}
+}
+
+func (kv *KVServer) Snapshot(lastIncludeIndex int) {
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
+	//e.Encode(kv.opmap)
+	e.Encode(kv.kvmap)
+	e.Encode(kv.opChan)
+	kv.rf.Snapshot(lastIncludeIndex, w.Bytes())
+}
+
+func (kv *KVServer) Restore(data []byte) {
+	r := bytes.NewBuffer(data)
+	d := labgob.NewDecoder(r)
+	//d.Decode(kv.opmap)
+	d.Decode(kv.kvmap)
+	d.Decode(kv.opChan)
 }
