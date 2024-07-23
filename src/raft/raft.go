@@ -387,7 +387,9 @@ func (rf *Raft) tryCommitEntry() {
 	majorityMatchedIndex := matchedIndex[majorityCnt]
 	// Leader will commit the entry if it finds the majority of followers have appended the entries.
 	// Only commit to this log if this log is from its current Term.
-	if rf.logTermAt(majorityMatchedIndex) == rf.currentTerm {
+	rf.debug(STATE, "MajorityMatchedIndex %d", majorityMatchedIndex)
+	rf.debugState()
+	if majorityMatchedIndex >= rf.lastLogIndex() && rf.logTermAt(majorityMatchedIndex) == rf.currentTerm {
 		rf.commitIndex = max(rf.commitIndex, majorityMatchedIndex)
 	}
 }

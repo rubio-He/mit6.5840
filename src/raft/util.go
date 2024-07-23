@@ -104,7 +104,7 @@ func (rf *Raft) logTermAt(idx int) int {
 		return rf.lastIncludeTerm
 	}
 	if arrayIdx >= len(rf.log) || arrayIdx < 0 {
-		panic(fmt.Sprintf("Index out of boundary: %d, Slice length is %d", idx, len(rf.log)))
+		panic(fmt.Sprintf("Index out of boundary: %d, Slice length is %d, lastIncludeIndex %d", idx, len(rf.log), rf.lastIncludeIndex))
 	}
 	return (rf.log)[arrayIdx].Term
 }

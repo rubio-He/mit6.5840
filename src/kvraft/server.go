@@ -233,6 +233,9 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv.opmap = make(map[int64]Op)
 	kv.kvmap = make(map[string]string)
 	kv.opChan = make(map[int]chan Op)
+
+	kv.Restore(kv.persister.ReadSnapshot())
+	DPrintf("Restore from Snapshot %+v", kv)
 	go kv.applier()
 
 	return kv
@@ -262,6 +265,7 @@ func (kv *KVServer) applier() {
 		} else if msg.SnapshotValid {
 			kv.newestOpIdx = msg.SnapshotIndex
 			kv.Restore(msg.Snapshot)
+			DPrintf("Restore from Snapshot %+v", msg)
 		}
 	}
 }
@@ -290,15 +294,27 @@ func (kv *KVServer) Snapshot(lastIncludeIndex int) {
 	w := new(bytes.Buffer)
 	e := labgob.NewEncoder(w)
 	//e.Encode(kv.opmap)
+	e.Encode(kv.newestOpIdx)
 	e.Encode(kv.kvmap)
-	e.Encode(kv.opChan)
+	e.Encode(kv.opmap)
 	kv.rf.Snapshot(lastIncludeIndex, w.Bytes())
 }
 
 func (kv *KVServer) Restore(data []byte) {
+	if data == nil || len(data) == 0 {
+		return
+	}
+
 	r := bytes.NewBuffer(data)
 	d := labgob.NewDecoder(r)
-	//d.Decode(kv.opmap)
-	d.Decode(kv.kvmap)
-	d.Decode(kv.opChan)
+	var newestOpIdx int
+	var kvmap map[string]string
+	var opmap map[int64]Op
+	d.Decode(&newestOpIdx)
+	d.Decode(&kvmap)
+	d.Decode(&opmap)
+	kv.newestOpIdx = newestOpIdx
+	kv.kvmap = kvmap
+	kv.opmap = opmap
+	kv.opChan = make(map[int]chan Op)
 }
