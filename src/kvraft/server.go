@@ -11,7 +11,7 @@ import (
 	"6.5840/raft"
 )
 
-const Debug = true
+const Debug = false
 
 func DPrintf(format string, a ...interface{}) (n int, err error) {
 	if Debug {
@@ -49,6 +49,7 @@ type KVServer struct {
 	persister    *raft.Persister
 
 	newestOpIdx int
+	pendingOp   map[int]int64
 	kvmap       map[string]string
 	opmap       map[int64]Op
 	opChan      map[int]chan Op
@@ -70,6 +71,14 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	kv.newestOpIdx = index
 	DPrintf("kv %d receive Get %+v at index %d", kv.me, args, index)
 	opChan := kv.opChan[index]
+
+	if id, ok := kv.pendingOp[args.ClientId]; ok {
+		if id != args.Uuid {
+			delete(kv.opmap, id)
+		}
+	}
+	kv.pendingOp[args.ClientId] = args.Uuid
+
 	kv.mu.Unlock()
 	loop := true
 	for loop {
@@ -114,6 +123,14 @@ func (kv *KVServer) Put(args *PutAppendArgs, reply *PutAppendReply) {
 	kv.newestOpIdx = index
 	DPrintf("kv %d receive Put %+v at index %d ", kv.me, args, index)
 	opChan := kv.opChan[index]
+
+	if id, ok := kv.pendingOp[args.ClientId]; ok {
+		if id != args.Uuid {
+			delete(kv.opmap, id)
+		}
+	}
+	kv.pendingOp[args.ClientId] = args.Uuid
+
 	kv.mu.Unlock()
 	loop := true
 	for loop {
@@ -157,6 +174,14 @@ func (kv *KVServer) Append(args *PutAppendArgs, reply *PutAppendReply) {
 	kv.newestOpIdx = index
 	DPrintf("kv %d receive Append %+v at index %d", kv.me, args, index)
 	opChan := kv.opChan[index]
+
+	if id, ok := kv.pendingOp[args.ClientId]; ok {
+		if id != args.Uuid {
+			delete(kv.opmap, id)
+		}
+	}
+	kv.pendingOp[args.ClientId] = args.Uuid
+
 	kv.mu.Unlock()
 
 	loop := true
@@ -233,6 +258,7 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv.opmap = make(map[int64]Op)
 	kv.kvmap = make(map[string]string)
 	kv.opChan = make(map[int]chan Op)
+	kv.pendingOp = make(map[int]int64)
 
 	kv.Restore(kv.persister.ReadSnapshot())
 	DPrintf("Restore from Snapshot %+v", kv)
@@ -250,10 +276,10 @@ func (kv *KVServer) applier() {
 			kv.mu.Lock()
 			kv.applyOp(&op)
 			if _, isLeader := kv.rf.GetState(); isLeader {
-				if kv.persister.RaftStateSize() >= kv.maxraftstate {
-					DPrintf("Snapshot the raft state %d", kv.persister.RaftStateSize())
+				if kv.maxraftstate > 0 && kv.persister.RaftStateSize() >= kv.maxraftstate {
+					DPrintf("Snapshot the raft state before %d", kv.persister.RaftStateSize())
 					kv.Snapshot(op.Idx)
-					DPrintf("Snapshot the raft state %d", kv.persister.RaftStateSize())
+					DPrintf("Snapshot the raft state after %d", kv.persister.RaftStateSize())
 				}
 				DPrintf("kv %d Sent, %+v", kv.me, op)
 				//DPrintf("op chan %+v", kv.opChan)
