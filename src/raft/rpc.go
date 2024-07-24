@@ -164,7 +164,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	}
 
 	// Raft contains the previous log, but with different term.
-	if args.PrevLogIndex <= rf.lastLogIndex() && args.PrevLogIndex > 0 && rf.logTermAt(args.PrevLogIndex) != args.PrevLogTerm {
+	if args.PrevLogIndex <= rf.lastLogIndex() && args.PrevLogIndex >= rf.lastIncludeIndex && rf.logTermAt(args.PrevLogIndex) != args.PrevLogTerm {
 		rf.debugState()
 		rf.debug(STATE, "with different term, %+v", args)
 		reply.Term = rf.currentTerm

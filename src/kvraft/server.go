@@ -77,8 +77,16 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 
 	kv.mu.Unlock()
 
-	loop := true
-	for loop {
+	kv.waitGet(args, reply, opChan)
+	go func() {
+		kv.mu.Lock()
+		defer kv.mu.Unlock()
+		delete(kv.opChan, index)
+	}()
+}
+
+func (kv *KVServer) waitGet(args *GetArgs, reply *GetReply, opChan chan Op) {
+	for !kv.killed() {
 		select {
 		case appliedOp := <-opChan:
 			DPrintf("Receive applied Op %+v", appliedOp)
@@ -88,20 +96,15 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 			}
 			reply.Err = OK
 			reply.Value = appliedOp.Value
-			loop = false
+			return
 		default:
 			if _, isLeader := kv.rf.GetState(); !isLeader {
 				DPrintf("kv %d not a leader anymore, return", kv.me)
 				reply.Err = ErrWrongLeader
-				loop = false
+				return
 			}
 		}
 	}
-	go func() {
-		kv.mu.Lock()
-		defer kv.mu.Unlock()
-		delete(kv.opChan, index)
-	}()
 }
 
 func (kv *KVServer) Put(args *PutAppendArgs, reply *PutAppendReply) {
@@ -125,27 +128,9 @@ func (kv *KVServer) Put(args *PutAppendArgs, reply *PutAppendReply) {
 		}
 	}
 	kv.pendingOp[args.ClientId] = args.Uuid
-
 	kv.mu.Unlock()
-	loop := true
-	for loop {
-		select {
-		case appliedOp := <-opChan:
-			DPrintf("Receive applied Op %+v", appliedOp)
-			if appliedOp.Uuid != args.Uuid || appliedOp.ClientId != args.ClientId {
-				DPrintf("skip applied Op %+v", appliedOp)
-				continue
-			}
-			reply.Err = OK
-			loop = false
-		default:
-			if _, isLeader := kv.rf.GetState(); !isLeader {
-				DPrintf("kv %d not a leader anymore, return", kv.me)
-				reply.Err = ErrWrongLeader
-				loop = false
-			}
-		}
-	}
+
+	kv.waitPutAppend(args, reply, opChan)
 	go func() {
 		kv.mu.Lock()
 		defer kv.mu.Unlock()
@@ -177,8 +162,16 @@ func (kv *KVServer) Append(args *PutAppendArgs, reply *PutAppendReply) {
 
 	kv.mu.Unlock()
 
-	loop := true
-	for loop {
+	kv.waitPutAppend(args, reply, opChan)
+	go func() {
+		kv.mu.Lock()
+		defer kv.mu.Unlock()
+		delete(kv.opChan, index)
+	}()
+}
+
+func (kv *KVServer) waitPutAppend(args *PutAppendArgs, reply *PutAppendReply, opChan chan Op) {
+	for !kv.killed() {
 		select {
 		case appliedOp := <-opChan:
 			DPrintf("Receive applied Op %+v", appliedOp)
@@ -187,20 +180,9 @@ func (kv *KVServer) Append(args *PutAppendArgs, reply *PutAppendReply) {
 				continue
 			}
 			reply.Err = OK
-			loop = false
-		default:
-			if _, isLeader := kv.rf.GetState(); !isLeader {
-				DPrintf("kv %d not a leader anymore, return", kv.me)
-				reply.Err = ErrWrongLeader
-				loop = false
-			}
+			return
 		}
 	}
-	go func() {
-		kv.mu.Lock()
-		defer kv.mu.Unlock()
-		delete(kv.opChan, index)
-	}()
 }
 
 // the tester calls Kill() when a KVServer instance won't
@@ -264,7 +246,7 @@ func (kv *KVServer) applier() {
 		msg := <-kv.applyCh
 		if msg.CommandValid {
 			op := msg.Command.(Op)
-			//DPrintf("kv %d Receive Applied Op %+v", kv.me, op)
+			DPrintf("kv %d Receive Applied Op %+v", kv.me, op)
 			kv.mu.Lock()
 			kv.applyOp(&op)
 			if _, isLeader := kv.rf.GetState(); isLeader {

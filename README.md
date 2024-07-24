@@ -6,6 +6,6 @@
   - [x] 3B Log agreement
   - [x] 3C Persistence
   - [x] 3D Log compaction (snapshotting)
-- [ ] Lab4
-  - [ ] Part A
-  - [ ] Part B
+- [x] Lab4
+  - [x] Part A
+  - [x] Part B

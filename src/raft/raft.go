@@ -94,6 +94,7 @@ type Raft struct {
 	lastIncludeIndex int
 	lastIncludeTerm  int
 	snapshot         []byte
+	heartbeatTicker  map[int]*time.Ticker
 
 	appendEntriesResultCh []chan AppendEntriesResult
 }
@@ -210,7 +211,13 @@ func (rf *Raft) Start(cmd interface{}) (int, int, bool) {
 	newEntry := Log{cmd, rf.currentTerm, index}
 	rf.log = append(rf.log, newEntry)
 	rf.persist()
-
+	for i := range rf.peers {
+		if i == rf.me {
+			continue
+		}
+		go rf.sendHeartbeat(i)
+		rf.heartbeatTicker[i].Reset(20 * time.Millisecond)
+	}
 	return index, term, isLeader
 }
 
@@ -280,7 +287,7 @@ func (rf *Raft) ticker() {
 }
 
 func (rf *Raft) applier() {
-	ticker := time.NewTicker(50 * time.Millisecond)
+	ticker := time.NewTicker(10 * time.Millisecond)
 	for !rf.killed() {
 		<-ticker.C
 		for rf.applyAvailable() {
@@ -340,12 +347,12 @@ func (rf *Raft) convertToLeader() {
 		if i == rf.me {
 			continue
 		}
+		rf.heartbeatTicker[i] = time.NewTicker(40 * time.Millisecond)
 		go rf.heartbeat(i)
 	}
 }
 
 func (rf *Raft) heartbeat(i int) {
-	heartBeatTicker := time.NewTicker(10 * time.Millisecond)
 	snapshotTicker := time.NewTicker(50 * time.Millisecond)
 	for !rf.killed() {
 		if !rf.isLeader() {
@@ -357,11 +364,12 @@ func (rf *Raft) heartbeat(i int) {
 			if result.Success {
 				rf.tryCommitEntry()
 			}
-		case <-heartBeatTicker.C:
+		case <-rf.heartbeatTicker[i].C:
 			go rf.sendHeartbeat(i)
+			rf.heartbeatTicker[i].Reset(40 * time.Millisecond)
 		case <-snapshotTicker.C:
 			rf.mu.Lock()
-			if rf.snapshot != nil {
+			if rf.snapshot != nil && len(rf.snapshot) > 0 {
 				rf.mu.Unlock()
 				go rf.installSnapShot(i)
 			} else {
@@ -581,6 +589,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	rf.applyCh = applyCh
 	rf.appendEntriesResultCh = make([]chan AppendEntriesResult, len(peers))
+	rf.heartbeatTicker = make(map[int]*time.Ticker)
 	for i := range peers {
 		rf.appendEntriesResultCh[i] = make(chan AppendEntriesResult)
 	}
