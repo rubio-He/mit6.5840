@@ -11,7 +11,7 @@ import (
 	"6.5840/raft"
 )
 
-const Debug = false
+const Debug = true
 
 func DPrintf(format string, a ...interface{}) (n int, err error) {
 	if Debug {
@@ -29,7 +29,6 @@ const (
 )
 
 type Op struct {
-	Idx   int
 	Type  OpType
 	Key   string
 	Value string
@@ -48,27 +47,24 @@ type KVServer struct {
 	maxraftstate int // snapshot if log grows this big
 	persister    *raft.Persister
 
-	newestOpIdx int
-	pendingOp   map[int]int64
-	kvmap       map[string]string
-	opmap       map[int64]Op
-	opChan      map[int]chan Op
+	pendingOp map[int]int64
+	kvmap     map[string]string
+	opmap     map[int64]Op
+	opChan    map[int]chan Op
 }
 
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	kv.mu.Lock()
-	index := kv.newestOpIdx + 1
-	op := Op{Idx: index, Type: GetOp, Key: args.Key, Value: "", Uuid: args.Uuid, ClientId: args.ClientId}
-	if _, ok := kv.opChan[index]; !ok {
-		kv.opChan[index] = make(chan Op)
-	}
-	_, _, isLeader := kv.rf.Start(op)
+	op := Op{Type: GetOp, Key: args.Key, Value: "", Uuid: args.Uuid, ClientId: args.ClientId}
+	index, _, isLeader := kv.rf.Start(op)
 	if !isLeader {
 		reply.Err = ErrWrongLeader
 		kv.mu.Unlock()
 		return
 	}
-	kv.newestOpIdx = index
+	if _, ok := kv.opChan[index]; !ok {
+		kv.opChan[index] = make(chan Op)
+	}
 	DPrintf("kv %d receive Get %+v at index %d", kv.me, args, index)
 	opChan := kv.opChan[index]
 
@@ -80,6 +76,7 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	kv.pendingOp[args.ClientId] = args.Uuid
 
 	kv.mu.Unlock()
+
 	loop := true
 	for loop {
 		select {
@@ -109,18 +106,16 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 
 func (kv *KVServer) Put(args *PutAppendArgs, reply *PutAppendReply) {
 	kv.mu.Lock()
-	index := kv.newestOpIdx + 1
-	op := Op{Idx: index, Type: PutOp, Key: args.Key, Value: args.Value, Uuid: args.Uuid, ClientId: args.ClientId}
-	if _, ok := kv.opChan[index]; !ok {
-		kv.opChan[index] = make(chan Op)
-	}
-	_, _, isLeader := kv.rf.Start(op)
+	op := Op{Type: PutOp, Key: args.Key, Value: args.Value, Uuid: args.Uuid, ClientId: args.ClientId}
+	index, _, isLeader := kv.rf.Start(op)
 	if !isLeader {
 		reply.Err = ErrWrongLeader
 		kv.mu.Unlock()
 		return
 	}
-	kv.newestOpIdx = index
+	if _, ok := kv.opChan[index]; !ok {
+		kv.opChan[index] = make(chan Op)
+	}
 	DPrintf("kv %d receive Put %+v at index %d ", kv.me, args, index)
 	opChan := kv.opChan[index]
 
@@ -160,18 +155,16 @@ func (kv *KVServer) Put(args *PutAppendArgs, reply *PutAppendReply) {
 
 func (kv *KVServer) Append(args *PutAppendArgs, reply *PutAppendReply) {
 	kv.mu.Lock()
-	index := kv.newestOpIdx + 1
-	op := Op{Idx: index, Type: AppendOp, Key: args.Key, Value: args.Value, Uuid: args.Uuid, ClientId: args.ClientId}
-	if _, ok := kv.opChan[index]; !ok {
-		kv.opChan[index] = make(chan Op)
-	}
-	_, _, isLeader := kv.rf.Start(op)
+	op := Op{Type: AppendOp, Key: args.Key, Value: args.Value, Uuid: args.Uuid, ClientId: args.ClientId}
+	index, _, isLeader := kv.rf.Start(op)
 	if !isLeader {
 		reply.Err = ErrWrongLeader
 		kv.mu.Unlock()
 		return
 	}
-	kv.newestOpIdx = index
+	if _, ok := kv.opChan[index]; !ok {
+		kv.opChan[index] = make(chan Op)
+	}
 	DPrintf("kv %d receive Append %+v at index %d", kv.me, args, index)
 	opChan := kv.opChan[index]
 
@@ -254,7 +247,6 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	// You may need initialization code here.
 	kv.applyCh = make(chan raft.ApplyMsg)
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
-	kv.newestOpIdx = 0
 	kv.opmap = make(map[int64]Op)
 	kv.kvmap = make(map[string]string)
 	kv.opChan = make(map[int]chan Op)
@@ -278,18 +270,17 @@ func (kv *KVServer) applier() {
 			if _, isLeader := kv.rf.GetState(); isLeader {
 				if kv.maxraftstate > 0 && kv.persister.RaftStateSize() >= kv.maxraftstate {
 					DPrintf("Snapshot the raft state before %d", kv.persister.RaftStateSize())
-					kv.Snapshot(op.Idx)
+					kv.Snapshot(msg.CommandIndex)
 					DPrintf("Snapshot the raft state after %d", kv.persister.RaftStateSize())
 				}
 				DPrintf("kv %d Sent, %+v", kv.me, op)
 				//DPrintf("op chan %+v", kv.opChan)
-				if cha, ok := kv.opChan[op.Idx]; ok {
+				if cha, ok := kv.opChan[msg.CommandIndex]; ok {
 					cha <- op
 				}
 			}
 			kv.mu.Unlock()
 		} else if msg.SnapshotValid {
-			kv.newestOpIdx = msg.SnapshotIndex
 			kv.Restore(msg.Snapshot)
 			DPrintf("Restore from Snapshot %+v", msg)
 		}
@@ -320,7 +311,6 @@ func (kv *KVServer) Snapshot(lastIncludeIndex int) {
 	w := new(bytes.Buffer)
 	e := labgob.NewEncoder(w)
 	//e.Encode(kv.opmap)
-	e.Encode(kv.newestOpIdx)
 	e.Encode(kv.kvmap)
 	e.Encode(kv.opmap)
 	kv.rf.Snapshot(lastIncludeIndex, w.Bytes())
@@ -333,13 +323,10 @@ func (kv *KVServer) Restore(data []byte) {
 
 	r := bytes.NewBuffer(data)
 	d := labgob.NewDecoder(r)
-	var newestOpIdx int
 	var kvmap map[string]string
 	var opmap map[int64]Op
-	d.Decode(&newestOpIdx)
 	d.Decode(&kvmap)
 	d.Decode(&opmap)
-	kv.newestOpIdx = newestOpIdx
 	kv.kvmap = kvmap
 	kv.opmap = opmap
 	kv.opChan = make(map[int]chan Op)
