@@ -78,11 +78,9 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	kv.mu.Unlock()
 
 	kv.waitGet(args, reply, opChan)
-	go func() {
-		kv.mu.Lock()
-		defer kv.mu.Unlock()
-		delete(kv.opChan, index)
-	}()
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+	delete(kv.opChan, index)
 }
 
 func (kv *KVServer) waitGet(args *GetArgs, reply *GetReply, opChan chan Op) {
@@ -131,11 +129,9 @@ func (kv *KVServer) Put(args *PutAppendArgs, reply *PutAppendReply) {
 	kv.mu.Unlock()
 
 	kv.waitPutAppend(args, reply, opChan)
-	go func() {
-		kv.mu.Lock()
-		defer kv.mu.Unlock()
-		delete(kv.opChan, index)
-	}()
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+	delete(kv.opChan, index)
 }
 
 func (kv *KVServer) Append(args *PutAppendArgs, reply *PutAppendReply) {
@@ -163,11 +159,9 @@ func (kv *KVServer) Append(args *PutAppendArgs, reply *PutAppendReply) {
 	kv.mu.Unlock()
 
 	kv.waitPutAppend(args, reply, opChan)
-	go func() {
-		kv.mu.Lock()
-		defer kv.mu.Unlock()
-		delete(kv.opChan, index)
-	}()
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+	delete(kv.opChan, index)
 }
 
 func (kv *KVServer) waitPutAppend(args *PutAppendArgs, reply *PutAppendReply, opChan chan Op) {

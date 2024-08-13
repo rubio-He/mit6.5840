@@ -10,7 +10,7 @@ import (
 
 // Debugging
 
-const DebugLevel = 0
+const DebugLevel = SNAPSHOT | PERSIST | STATE | EVENT
 
 type Topic int
 
